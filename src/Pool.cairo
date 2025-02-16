@@ -156,7 +156,7 @@ pub mod Pool {
                     .write(self.rewarded_liquidity_providers.read(self.current_day.read()) + 1)
             }
             let (index, subtree_helper) = insert(
-                ref self, commitment, get_contract_address(), reward,
+                ref self, commitment, reward,
             );
             
             self.commitments.write(commitment, true); 
@@ -327,14 +327,14 @@ pub mod Pool {
 
     // Merkle tree functions
     fn insert(
-        ref self: ContractState, _leaf: u256, _pool: ContractAddress, _reward: bool,
+        ref self: ContractState, _leaf: u256, _reward: bool,
     ) -> (u256, Array<u256>) {
         let _nextIndex: u32 = self.next_index.read();
         assert!(_nextIndex != MAX_TREE_CAP, "Merkle tree is full. No more leaves can be added");
         let mut currentIndex: u32 = _nextIndex;
         let mut currentDay = 1;
         if (_reward == true) {
-            currentDay = IPoolDispatcher { contract_address: _pool }.currentDay();
+            currentDay = self.currentDay();
         }
         let mut currentLevelHash = IHasherDispatcher { contract_address: self.hasher.read() }
             .MiMC5Sponge([_leaf, currentDay], 0);
