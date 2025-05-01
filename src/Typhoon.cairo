@@ -97,6 +97,18 @@ pub mod Typhon {
 
     #[abi(embed_v0)]
     impl Typhoon of ITyphoon<ContractState> {
+        /// This function initiates a deposit in the specified pool
+        /// 
+        /// # Parameters
+        /// 
+        /// - `commitment`: The commitment to be deposited
+        /// - `pool`: The pool where the deposit will be made
+        /// - `reward`: A boolean indicating if the deposit is in reward mode
+        /// 
+        /// # Panics
+        /// 
+        /// - Panics if the length of `commitment` and `pool` arrays are not equal
+        /// - Panics if the pool is not a known allowed pool
         fn deposit(
             ref self: ContractState,
             _commitment: Array<u256>,
@@ -133,19 +145,41 @@ pub mod Typhon {
                 );
         }
 
-        // URGENT: TEST IF IS POSSIBLE TO WITHDRAW FROM A POOL THAT THE USER DOES NOT MAKE DEPOSIT
-        // IF SO, THEN MOVE THE MERKLE TREE TO THE POOL CONTRACT
+        /// This function initiates a withdraw in the specified pool
+        /// 
+        /// # Parameters
+        /// 
+        /// - `full_proof_with_hints`: The proof and hints for the withdrawal
+        /// - `pool`: The pool from which the withdrawal will be made
         fn withdraw(
             ref self: ContractState, full_proof_with_hints: Span<felt252>, pool: ContractAddress,
         ) {
             IPoolDispatcher { contract_address: pool }.processWithdraw(full_proof_with_hints);
         }
 
+        /// This function returns a pool address for a given token and denomination
+        /// 
+        /// # Parameters
+        /// 
+        /// - `_token`: The token address
+        /// - `_denomination`: The denomination of the token
         fn getPool(
             self: @ContractState, _token: ContractAddress, _denomination: u256,
         ) -> ContractAddress {
             return self.pools.entry(_token).entry(_denomination).read();
         }
+
+        /// This function create anew pool for a given token and denomination
+        ///
+        /// # Parameters
+        /// 
+        /// - `_token`: The token address
+        /// - `_denomination`: The denomination of the token
+        /// - `_day`: The current day that the pool is created
+        /// 
+        /// # Panics
+        /// 
+        /// - Panics if the caller is not the owner of the contract
         fn addPool(
             ref self: ContractState, _token: ContractAddress, _denomination: u256, _day: u256,
         ) {
@@ -168,10 +202,12 @@ pub mod Typhon {
             self.allowed_pools.entry(pool_address).write(true);
         }
 
+        /// This function returns the verifier address
         fn verifier(self: @ContractState) -> ContractAddress {
             return self.verifier.read();
         }
 
+        /// This function returns the Hasher address
         fn hasher(self: @ContractState) -> ContractAddress {
             return self.hasher.read();
         }

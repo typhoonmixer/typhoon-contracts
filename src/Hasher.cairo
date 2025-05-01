@@ -44,6 +44,17 @@ pub mod Hasher {
 
     #[abi(embed_v0)]
     impl Hasher of IHasher<ContractState>{
+        /// Hashes the input using the MiMC5 hash function.
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state.
+        /// - `_ins`: The input to be hashed, represented as an array of two u256 values.
+        /// - `_k`: The key used in the MiMC5 hash function.
+        /// 
+        /// # Returns
+        ///
+        /// - The result of the MiMC5 hash function applied to the input and key.
         fn MiMC5Sponge(self: @ContractState, _ins: [u256; 2], _k: u256) -> u256{
             let mut lastR: u256 = 0;
             let mut lastC: u256 = 0;
@@ -58,6 +69,18 @@ pub mod Hasher {
         }
     }
 
+    /// Applies the MiMC5 Feistel function to the input values.
+    ///
+    /// # Parameters
+    ///
+    /// - `self`: The contract state.
+    /// - `_iL`: The left input value.
+    /// - `_iR`: The right input value.
+    /// - `_k`: The key used in the MiMC5 Feistel function.
+    ///
+    /// # Returns
+    ///
+    /// - A tuple containing the left and right output values after applying the MiMC5 Feistel function.
     fn MiMC5Feistel(self: @ContractState, _iL: @u256, _iR: @u256, _k: @u256) -> (u256, u256){
         let nRounds: u8 = 20;
         let mut lastL = *_iL;
@@ -81,6 +104,16 @@ pub mod Hasher {
         return (lastL,lastR);
     }
 
+    /// Multiplies two u256 values modulo p.
+    ///
+    /// # Parameters
+    ///
+    /// - `a`: The first u256 value.
+    /// - `b`: The second u256 value.
+    ///
+    /// # Returns
+    ///
+    /// - The result of the multiplication modulo p.
     fn safe_mul_mod(a: @u256, b: @u256) -> u256{
         let mut re = u256_wide_mul(*a, *b);
         let nzm: NonZero<u256> = p.try_into().unwrap();
@@ -88,6 +121,16 @@ pub mod Hasher {
         return res;
     }
 
+    /// Adds two u256 values modulo p.
+    ///
+    /// # Parameters
+    ///
+    /// - `x`: The first u256 value.
+    /// - `y`: The second u256 value.
+    ///
+    /// # Returns
+    ///
+    /// - The result of the addition modulo p.
     fn addmod(x: @u256,y: @u256) -> u256{
         return ((*x % p)+(*y % p)) % p;
     }

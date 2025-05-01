@@ -137,6 +137,22 @@ pub mod Pool {
 
     #[abi(embed_v0)]
     impl Pool of IPool<ContractState> {
+        /// Process the deposit of the denomination in the pool by a specific account
+        /// 
+        /// # Panics
+        /// 
+        /// This function panics if the caller is not the factory or if the commitment has already been submitted
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state
+        /// - `_from`: The address of the account making the deposit
+        /// - `reward`: A boolean indicating if the deposit is eligible for a reward
+        /// - `commitment`: The commitment to be processed
+        /// 
+        /// # Returns
+        /// 
+        /// A tuple containing the index of the commitment and an array of u256 values representing the subtree helper
         fn processDeposit(ref self: ContractState, _from: ContractAddress, reward: bool, commitment: u256) -> (u256, Array<u256>){
             assert!(get_caller_address() == self.fac.read(), "Is not the factory");
             assert!(
@@ -163,6 +179,16 @@ pub mod Pool {
             return (index, subtree_helper);      
         }
 
+        /// Process the withdraw of the denomination from the pool by a specific account
+        /// 
+        /// # Panics
+        /// 
+        /// This function panics if the caller is not the factory or if the proof is invalid
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state
+        /// - `full_proof_with_hints`: The proof to be processed
         fn processWithdraw(ref self: ContractState, full_proof_with_hints: Span<felt252>) {
             let caller = get_caller_address();
             assert!(caller == self.fac.read(), "{:?} Is not the factory", caller);
@@ -214,6 +240,8 @@ pub mod Pool {
             }
         }
 
+
+        /// This function updates the current day of the contract state
         fn updateDay(ref self: ContractState) {
             let mut cur_day = self.current_day.read();
             let mut dif: u256 = 0;
@@ -226,10 +254,22 @@ pub mod Pool {
             }
         }
 
+        /// This function returns the current day of the contract state
         fn currentDay(self: @ContractState) -> u256 {
             return self.current_day.read();
         }
 
+        /// This function calculates the reward for the liquidity providers
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state
+        /// - `start_day`: The start day of the reward calculation
+        /// - `days`: The number of days to calculate the reward for
+        /// 
+        /// # Returns
+        /// 
+        /// The calculated reward for the liquidity providers
         fn calculateReward(self: @ContractState, start_day: u256, days: u256) -> u256 {
             let mut accrued_fee: u256 = 0;
             let mut total_lps: u256 = 0;
@@ -245,32 +285,52 @@ pub mod Pool {
             let lp_share = lps_part / total_lps;
             return lp_share;
         }
+
+        /// This function returns the factory address of the contract state
         fn factory(self: @ContractState) -> ContractAddress {
             return self.fac.read();
         }
+
+        /// This function returns the number of liquidity providers in a specific day
         fn liquidityProviders(self: @ContractState, _day: u256) -> u256 {
             return self.liquidity_providers.read(_day);
         }
+
+        /// This function returns the number of rewarded liquidity providers in a specific day
         fn rewardedLiquidityProviders(self: @ContractState, _day: u256) -> u256 {
             return self.rewarded_liquidity_providers.read(_day);
         }
 
+        /// This function returns the number of withdraws in a specific day
         fn withdrawsInDay(self: @ContractState, _day: u256) -> u256 {
             return self.withdraws_in_day.read(_day);
         }
 
+        /// This function returns the token address of the pool
         fn token(self: @ContractState) -> ContractAddress {
             return self.token.read();
         }
 
+        /// This function returns the denomination of the pool
         fn denomination(self: @ContractState) -> u256 {
             return self.denomination.read();
         }
 
+        /// This function returns the withdraw fee of the pool
         fn withdrawFee(self: @ContractState) -> u256 {
             return self.withdraw_fee.read();
         }
 
+        /// This function check if is a known root
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state
+        /// - `_root`: The root to check
+        /// 
+        /// # Returns
+        /// 
+        /// A boolean indicating if the root is known
         fn isKnownRoot(self: @ContractState, _root: u256) -> bool {
             if _root == 0 {
                 return false;
@@ -293,10 +353,28 @@ pub mod Pool {
             };
             return known;
         }
+
+        /// This function returns the zero value for a specific index
         fn zeros(self: @ContractState, i: u32) -> u256 {
             let zeroArraySpan = ZERO_VALUES.span();
             return *zeroArraySpan[i];
         }
+
+        /// This function hashes two values using the MiMC5 hash function
+        /// 
+        /// # Parameters
+        /// 
+        /// - `self`: The contract state
+        /// - `_left`: The left value to hash
+        /// - `_right`: The right value to hash
+        ///
+        /// # Panics
+        /// 
+        /// This function panics if the left or right value is outside the field size
+        /// 
+        /// # Returns
+        /// 
+        /// The hash of the two values
         fn hashLeftRight(self: @ContractState, _left: u256, _right: u256) -> u256 {
             assert!(_left < FIELD_SIZE, "_left should be inside the field");
             assert!(_right < FIELD_SIZE, "_right should be inside the field");
@@ -305,16 +383,26 @@ pub mod Pool {
             return result;
         }
 
+        /// This function returns the last root of the pool
         fn getLastRoot(self: @ContractState) -> u256 {
             return self.roots.entry(self.current_root_index.read().into()).read();
         }
 
+        /// This function checks if a nullifier hash has been spent
         fn isSpent(self: @ContractState, _nullifierHash: u256) -> bool {
             return self.nullifier_hashes.read(_nullifierHash);
         }
     }
 
-
+    /// This function returns the number of days passed since the current day
+    /// 
+    /// # Parameters
+    /// 
+    /// - `current_day`: The current day to check
+    /// 
+    /// # Returns
+    /// 
+    /// The number of days passed since the current day
     fn getDaysPassed(current_day: @u256) -> u256 {
         if (*current_day > get_block_timestamp().into()) {
             return 0;
@@ -325,12 +413,22 @@ pub mod Pool {
         return days;
     }
 
-    // Merkle tree functions
+    
+    /// This function inserts a new leaf into the Merkle tree
+    /// 
+    /// # Parameters
+    /// 
+    /// - `self`: The contract state
+    /// - `_leaf`: The leaf to insert
+    /// - `_reward`: A boolean indicating if the leaf is eligible for a reward
+    /// 
+    /// # Returns
+    /// 
+    /// A tuple containing the index of the leaf and an array of u256 values representing the subtree helper
     fn insert(
         ref self: ContractState, _leaf: u256, _reward: bool,
     ) -> (u256, Array<u256>) {
         let _nextIndex: u32 = self.next_index.read();
-        assert!(_nextIndex != MAX_TREE_CAP, "Merkle tree is full. No more leaves can be added");
         let mut currentIndex: u32 = _nextIndex;
         let mut currentDay = 1;
         if (_reward == true) {

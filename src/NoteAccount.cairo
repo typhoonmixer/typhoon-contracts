@@ -27,12 +27,38 @@ use starknet::storage::StorageMapWriteAccess;
 
     #[abi(embed_v0)]
     impl NoteAccount of INoteAccount<ContractState> {
+        /// Adds a note to a specific public key.
+        /// 
+        /// # Parameters
+        ///
+        /// - `self`: The contract state.
+        /// - `pubKey`: The public key associated with the note.
+        /// - `encryptedNote`: The encrypted note to be added.
+        /// - `msg_hash`: The hash of the message to be verified.
+        /// - `r`: The r component of the signature.
+        /// - `s`: The s component of the signature.
+        /// - `v`: The v component of the signature.
+        ///
+        /// # Panics
+        ///
+        /// - Panics if the signature is invalid.
         fn addNote(ref self: ContractState, pubKey: EthAddress, encryptedNote: Span<u256>, msg_hash: u256, r: u256, s: u256, v: u32) {
             // will panic if the signature is invalid
             verify_signature(pubKey, msg_hash, r, s, v);
             self.notesCount.entry(pubKey).write(self.notesCount.read(pubKey) + 1);
             self.notes.entry(pubKey).entry(self.notesCount.read(pubKey)).write((*encryptedNote[0], *encryptedNote[1], *encryptedNote[2], *encryptedNote[3], *encryptedNote[4], *encryptedNote[5], *encryptedNote[6]));
         }
+
+        /// Retrieves the notes associated with a specific public key.
+        ///
+        /// # Parameters
+        ///
+        /// - `self`: The contract state.
+        /// - `pubKey`: The public key whose notes are to be retrieved.
+        ///
+        /// # Returns
+        ///
+        /// - An array of tuples containing the notes data.
         fn getNotes(self: @ContractState, pubKey: EthAddress) -> Array<(u256, u256, u256, u256, u256, u256, u256)> {
             let mut notes: Array = ArrayTrait::<(u256, u256, u256, u256, u256, u256, u256)>::new();
             let mut i: u256 = 0;
@@ -52,6 +78,22 @@ use starknet::storage::StorageMapWriteAccess;
             };
             return notes;
         }
+
+        /// Updates the notes associated with a specific public key.
+        ///
+        /// # Parameters
+        ///
+        /// - `self`: The contract state.
+        /// - `pubKey`: The public key whose notes are to be updated.
+        /// - `msg_hash`: The hash of the message to be verified.
+        /// - `r`: The r component of the signature.
+        /// - `s`: The s component of the signature.
+        /// - `v`: The v component of the signature.
+        /// - `newNotes`: An array of tuples containing the new notes data.
+        ///
+        /// # Panics
+        ///
+        /// - Panics if the signature is invalid.
         fn updateNotes(ref self: ContractState,pubKey: EthAddress, msg_hash: u256, r: u256, s: u256, v: u32  ,newNotes: Array<(u256, u256, u256, u256, u256, u256, u256)>){
             verify_signature(pubKey, msg_hash, r, s, v);
             let mut i: u32 = 0;
@@ -67,6 +109,19 @@ use starknet::storage::StorageMapWriteAccess;
         }
     }
 
+    /// Verifies the signature of a message.
+    ///     
+    /// # Parameters
+    ///
+    /// - `eth_address`: The Ethereum address associated with the signature.
+    /// - `msg_hash`: The hash of the message to be verified.
+    /// - `r`: The r component of the signature.
+    /// - `s`: The s component of the signature.
+    /// - `v`: The v component of the signature.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the signature is invalid.
     fn verify_signature(
         eth_address: EthAddress, msg_hash: u256, r: u256, s: u256, v: u32,
     ) {
@@ -74,6 +129,12 @@ use starknet::storage::StorageMapWriteAccess;
         verify_eth_signature(:msg_hash, :signature, :eth_address);
     }
 
+    /// Erases the notes associated with a specific public key.
+    ///
+    /// # Parameters
+    ///
+    /// - `self`: The contract state.
+    /// - `pubKey`: The public key whose notes are to be erased.
     fn eraseNotes(ref self: ContractState, pubKey: EthAddress){
         let mut i: u256 = 0;
         loop{
