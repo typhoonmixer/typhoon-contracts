@@ -94,12 +94,12 @@ use starknet::storage::StorageMapWriteAccess;
         /// # Panics
         ///
         /// - Panics if the signature is invalid.
-        fn updateNotes(ref self: ContractState,pubKey: EthAddress, msg_hash: u256, r: u256, s: u256, v: u32  ,newNotes: Array<(u256, u256, u256, u256, u256, u256, u256)>){
+        fn updateNotes(ref self: ContractState,pubKey: EthAddress, msg_hash: u256, r: u256, s: u256, v: u32  ,newNotes: Span<Span<u256>>){
             verify_signature(pubKey, msg_hash, r, s, v);
             let mut i: u32 = 0;
             eraseNotes(ref self,pubKey);
             loop{
-                self.notes.entry(pubKey).entry(i.into()).write(*newNotes.at(i));
+                self.notes.entry(pubKey).entry(i.into()).write((*newNotes[i][0], *newNotes[i][1], *newNotes[i][2], *newNotes[i][3], *newNotes[i][4], *newNotes[i][5], *newNotes[i][6]));
                 i+=1;
                 if(newNotes.len() == i){
                     break;
