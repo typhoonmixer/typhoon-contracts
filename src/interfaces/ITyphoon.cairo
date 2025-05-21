@@ -14,9 +14,12 @@ pub trait ITyphoon<TContractState> {
         ref self: TContractState,
         _token: ContractAddress,
         _denomination: u256,
-        _day: u256
+        _day: u256,
+        _fee: u256
     );
     
     fn verifier(self: @TContractState) -> ContractAddress;
     fn hasher(self: @TContractState) -> ContractAddress;
+    fn setPoolFee(ref self: TContractState, _pool: ContractAddress, _fee: u256);
+    fn withdrawPoolProfit(ref self: TContractState, _pool: ContractAddress, _recipient: ContractAddress, _amount: u256);
 }

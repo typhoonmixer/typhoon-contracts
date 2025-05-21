@@ -8,13 +8,15 @@ source = "git+https://github.com/keep-starknet-strange/garaga.git?tag=v0.17.0#ee
 
 [[package]]
 name = "snforge_scarb_plugin"
-version = "0.34.0"
-source = "git+https://github.com/foundry-rs/starknet-foundry?tag=v0.34.0#d6976d4635cbe69bd199fd502788c469d408ed2d"
+version = "0.34.1"
+source = "registry+https://scarbs.xyz/"
+checksum = "sha256:3a1bcfcd8e65cb3c9a437f59c44969756a78a99450ea3e7bd9362a7e97e1778e"
 
 [[package]]
 name = "snforge_std"
-version = "0.34.0"
-source = "git+https://github.com/foundry-rs/starknet-foundry?tag=v0.34.0#d6976d4635cbe69bd199fd502788c469d408ed2d"
+version = "0.34.1"
+source = "registry+https://scarbs.xyz/"
+checksum = "sha256:61df5e54dbe1c946861f0580dc5e06f87a7a71c42d27931dccf7f3824f59ac34"
 dependencies = [
  "snforge_scarb_plugin",
 ]

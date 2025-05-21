@@ -8,7 +8,7 @@ pub mod Pool {
     use typhoon::interfaces::IPool::{IPool};
     use starknet::storage::StorageMapWriteAccess;
     use starknet::storage::StorageMapReadAccess;
-    use starknet::{ContractAddress, get_block_timestamp, get_contract_address, get_caller_address};
+    use starknet::{ContractAddress, get_block_timestamp, get_contract_address, get_caller_address, contract_address_const};
     use starknet::storage::Map;
     use typhoon::interfaces::IPool::IPoolDispatcherTrait;
     use super::super::verifier::groth16_verifier::IGroth16VerifierBN254DispatcherTrait;
@@ -19,14 +19,16 @@ pub mod Pool {
 
     use typhoon::verifier::groth16_verifier::{IGroth16VerifierBN254Dispatcher};
 
-    const day: u32 = 86400;
-    const ROOT_HISTORY_SIZE: u32 = 30;
+    const DAY: u64 = 86400;
+    const BIPS: u256 = 100;
     const FIELD_SIZE: u256 =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
-    const ZERO_VALUE: u256 =
-        21663839004416932945382355908790599225266501822907911457504978515578255421292; // = keccak256("tornado") % FIELD_SIZE
-
-    const MAX_TREE_CAP: u32 = 1024;
+    // const ZERO_VALUE: u256 =
+    //     21663839004416932945382355908790599225266501822907911457504978515578255421292; // = keccak256("tornado") % FIELD_SIZE
+    
+    const H: u256 = 127;
+    const W: u256 = 4;
+    const CAPACITY: u256 = 38597363079105396331939602657575601895140538433663384650215202958913929478144; // CAPACITY = W * (W**H - 1) / (W - 1)
 
     const ZERO_VALUES: [u256; 32] = [
         0x2fe54c60d3acabf3343a35b6eba15db4821b340f76e741e2249685ed4899af6c,
@@ -105,6 +107,11 @@ pub mod Pool {
         hasher: ContractAddress,
         filled_subtrees: Map<u256, u256>,
         next_index: u32,
+        count: u256,
+        D: Map<u256, u256>,
+        DD: Map<u256, u256>,
+        isValidDD: Map<u256, bool>,
+        profit: u256,
     }
 
     #[constructor]
@@ -114,7 +121,8 @@ pub mod Pool {
         _denomination: felt252,
         _current_day: felt252,
         _verifier: felt252,
-        _hasher: felt252
+        _hasher: felt252,
+        _fee: felt252,
     ) {
         self.token.write(_token.try_into().unwrap());
         self.verifier.write(_verifier.try_into().unwrap());
@@ -123,11 +131,11 @@ pub mod Pool {
         self.fac.write(get_caller_address());
         self.current_day.write(_current_day.try_into().unwrap());
         self.levels.write(10);
-        let onepercent: u256 = (_denomination.try_into().unwrap() * 1) / 100;
+        let onepercent: u256 = (_denomination.try_into().unwrap()) / BIPS;
         self
             .withdraw_fee
             .write(
-                (onepercent * 50) / 100,
+                (onepercent * _fee.into()) / BIPS,
             ); // 0.5% withdraw fee (this can change until mainnet deployment)
         for i in 0..self.levels.read() {
             self.filled_subtrees.entry(i.into()).write(self.zeros(i))
@@ -153,7 +161,7 @@ pub mod Pool {
         /// # Returns
         /// 
         /// A tuple containing the index of the commitment and an array of u256 values representing the subtree helper
-        fn processDeposit(ref self: ContractState, _from: ContractAddress, reward: bool, commitment: u256) -> (u256, Array<u256>){
+        fn processDeposit(ref self: ContractState, _from: ContractAddress, commitment: u256) -> Array<(u256,u256,u256)>{
             assert!(get_caller_address() == self.fac.read(), "Is not the factory");
             assert!(
                 self.commitments.read(commitment) == false,
@@ -165,18 +173,18 @@ pub mod Pool {
                 .liquidity_providers
                 .entry(self.current_day.read())
                 .write(self.liquidity_providers.read(self.current_day.read()) + 1);
-            if (reward) {
-                self
-                    .rewarded_liquidity_providers
-                    .entry(self.current_day.read())
-                    .write(self.rewarded_liquidity_providers.read(self.current_day.read()) + 1)
-            }
-            let (index, subtree_helper) = insert(
-                ref self, commitment, reward,
+            // if (reward) {
+            //     self
+            //         .rewarded_liquidity_providers
+            //         .entry(self.current_day.read())
+            //         .write(self.rewarded_liquidity_providers.read(self.current_day.read()) + 1)
+            // }
+            let roots: Array<(u256,u256,u256)> = insert(
+                ref self, commitment
             );
             
             self.commitments.write(commitment, true); 
-            return (index, subtree_helper);      
+            return roots;    
         }
 
         /// Process the withdraw of the denomination from the pool by a specific account
@@ -199,7 +207,7 @@ pub mod Pool {
                     assert!(
                         !self.nullifier_hashes.read(*value[1]), "The note has been already spent",
                     );
-                    assert!(self.isKnownRoot(*value[0]), "Cannot find your merkle root");
+                    assert!(self.isKnownDD(*value[0]), "Cannot find your merkle root");
                     self.nullifier_hashes.write(*value[1], true);
                     let ur = *value[3];
                     let fr: felt252 = ur.try_into().unwrap();
@@ -210,14 +218,14 @@ pub mod Pool {
 
                     self.emit(Withdraw { recipient: recipient, nullifierHash: *value[1] });
                     self.updateDay();
-                    let mut days = 0;
-                    let mut reward = 0;
-                    if (day != 1) {
-                        days = getDaysPassed(value[2]);
-                        if (days > 1) {
-                            reward = self.calculateReward(*value[2], days);
-                        }
-                    }
+                    // let mut days = 0;
+                    // let mut reward = 0;
+                    // if (day != 1) {
+                    //     days = getDaysPassed(value[2]);
+                    //     if (days > 1) {
+                    //         reward = self.calculateReward(*value[2], days);
+                    //     }
+                    // }
 
                     self
                         .withdraws_in_day
@@ -229,15 +237,30 @@ pub mod Pool {
                         .transfer(
                             recipient,
                             ((self.denomination.read() - self.withdraw_fee.read()) - *value[5])
-                                + reward,
+                                // + reward,
                         );
-                    if (*value[5] > 0) {
+                    self.profit.write(self.profit.read() + self.withdraw_fee.read());
+                    if (*value[5] > 0 || relayer == contract_address_const::<0>()) {
                         IERC20Dispatcher { contract_address: self.token.read() }
                             .transfer(relayer, *value[5]);
                     }
                 },
                 Option::None => { panic!("Invalid withdraw proof"); },
             }
+        }
+
+        fn setWithdrawFee(ref self: ContractState, _fee: u256){
+            assert!(get_caller_address() == self.fac.read(), "Only factory");
+            let onepercent: u256 = (self.denomination.read()) / BIPS;
+            self.withdraw_fee.write((_fee * onepercent) / BIPS);
+        }
+
+        fn withdrawProfit(ref self: ContractState, _recipient: ContractAddress, _amount: u256){
+            assert!(get_caller_address() == self.fac.read(), "Only factory");
+            assert!(self.profit.read() >= _amount, "Not enough profit");
+            self.profit.write(self.profit.read() - _amount);
+            IERC20Dispatcher { contract_address: self.token.read() }
+                .transfer(_recipient, _amount);
         }
 
 
@@ -247,9 +270,9 @@ pub mod Pool {
             let mut dif: u256 = 0;
             if cur_day < get_block_timestamp().into() {
                 dif = get_block_timestamp().into() - cur_day;
-                if dif > day.into() {
+                if dif > DAY.into() {
                     let days = getDaysPassed(@cur_day);
-                    self.current_day.write(cur_day + (day.into() * days) + day.into());
+                    self.current_day.write(cur_day + (DAY.into() * days));
                 }
             }
         }
@@ -274,11 +297,11 @@ pub mod Pool {
             let mut accrued_fee: u256 = 0;
             let mut total_lps: u256 = 0;
             // needs to hold for at least 1 day
-            let s_day = start_day + day.into();
+            let s_day = start_day + DAY.into();
             for i in 0..days {
                 total_lps = total_lps
-                    + self.rewarded_liquidity_providers.read(s_day + (day.into() * i));
-                let wd = self.withdraws_in_day.read(s_day + (day.into() * i));
+                    + self.rewarded_liquidity_providers.read(s_day + (DAY.into() * i));
+                let wd = self.withdraws_in_day.read(s_day + (DAY.into() * i));
                 accrued_fee = accrued_fee + (wd * self.withdraw_fee.read());
             };
             let lps_part = (accrued_fee * 80) / 100; // 80% of the fees goes to the LPs
@@ -331,27 +354,8 @@ pub mod Pool {
         /// # Returns
         /// 
         /// A boolean indicating if the root is known
-        fn isKnownRoot(self: @ContractState, _root: u256) -> bool {
-            if _root == 0 {
-                return false;
-            }
-            let currentRootIndex = self.current_root_index.read();
-            let mut i = currentRootIndex;
-            let mut known: bool = false;
-            loop {
-                if _root == self.roots.entry(i.into()).read() {
-                    known = true;
-                    break;
-                }
-                if i == 0 {
-                    i = ROOT_HISTORY_SIZE;
-                }
-                i = i - 1;
-                if i == 0 {
-                    break;
-                }
-            };
-            return known;
+        fn isKnownDD(self: @ContractState, _dd: u256) -> bool {
+            return self.isValidDD.read(_dd);
         }
 
         /// This function returns the zero value for a specific index
@@ -408,9 +412,94 @@ pub mod Pool {
             return 0;
         }
         let dif = get_block_timestamp().into() - *current_day;
-        let r = dif % day.into();
-        let days = (dif - r) / day.into();
+        let r = dif % DAY.into();
+        let days = (dif - r) / DAY.into();
         return days;
+    }
+
+    fn insert(ref self: ContractState, _leaf: u256) -> Array<(u256, u256, u256)> {
+        let mut roots: Array<(u256, u256, u256)> = ArrayTrait::new();
+        let _nextIndex: u32 = self.next_index.read();
+        let mut currentIndex: u32 = _nextIndex;
+        let mut currentDay = 1;
+        let mut leafHash = IHasherDispatcher { contract_address: self.hasher.read() }
+            .MiMC5Sponge([_leaf, currentDay], 0);
+        let mut _count = self.count.read();
+        let mut z: u256 = 0;
+        let mut fl: u256 = 0;
+        let mut ll: u256 = 0;
+        let mut lv: u256 = 0;
+        let mut W_pow_lv: u256 = 1; // W ** lv
+
+        loop{
+          z += W_pow_lv;
+          if(_count < z){
+            fl = 0;
+          } else {
+            fl = (_count - z) / W_pow_lv + 1;
+          }
+          if (fl == 0) {
+            ll = 0;
+          } else {
+            ll = (fl - 1) % W + 1;
+          }
+          if ll < W {
+            break;
+          }
+          lv+=1;
+          W_pow_lv *= W;
+        };
+
+        let mut v: u256 = 0;
+        if(lv > 0){
+            v = self.D.entry(lv - 1).read();
+        } else {
+            v = leafHash;
+        }
+        roots.append((lv, fl, v));
+
+        let mut d: u256 = 0;
+        if ll == 0 {
+            d = v
+        } else {
+            d = IHasherDispatcher { contract_address: self.hasher.read() }
+            .MiMC5Sponge([self.D.entry(lv).read(), v], 0);
+        }
+        let mut dd: u256 = 0;
+        if fl == ll {
+            dd = d;
+        } else {
+            dd = IHasherDispatcher { contract_address: self.hasher.read() }
+            .MiMC5Sponge([self.DD.entry(lv+1).read(), d], 0);
+        }
+
+        let mut prevDd = 0;
+        loop{
+            self.isValidDD.entry(dd).write(true);
+            self.D.entry(lv).write(d);
+            self.DD.entry(lv).write(dd);
+            if lv == 0 {
+                break;
+            }
+            z -= W_pow_lv;
+            prevDd = dd;
+            lv-=1;
+            W_pow_lv /= W;
+            fl = (_count - z) / W_pow_lv + 1;
+            if lv > 0{
+                v = self.D.entry(lv - 1).read();
+            } else {
+                v = leafHash;
+            }
+            roots.append((lv, fl, v));
+            d = v;
+            dd = IHasherDispatcher { contract_address: self.hasher.read() }
+            .MiMC5Sponge([prevDd, d], 0);            
+
+        }
+        self.count.write(_count + 1);
+        
+        return roots;
     }
 
     
@@ -425,39 +514,39 @@ pub mod Pool {
     /// # Returns
     /// 
     /// A tuple containing the index of the leaf and an array of u256 values representing the subtree helper
-    fn insert(
-        ref self: ContractState, _leaf: u256, _reward: bool,
-    ) -> (u256, Array<u256>) {
-        let _nextIndex: u32 = self.next_index.read();
-        let mut currentIndex: u32 = _nextIndex;
-        let mut currentDay = 1;
-        if (_reward == true) {
-            currentDay = self.currentDay();
-        }
-        let mut currentLevelHash = IHasherDispatcher { contract_address: self.hasher.read() }
-            .MiMC5Sponge([_leaf, currentDay], 0);
-        let mut left: u256 = 0;
-        let mut right: u256 = 0;
-        let mut subtree_helper: Array<u256> = ArrayTrait::new();
+    // fn insert(
+    //     ref self: ContractState, _leaf: u256,
+    // ) -> (u256, Array<u256>) {
+    //     let _nextIndex: u32 = self.next_index.read();
+    //     let mut currentIndex: u32 = _nextIndex;
+    //     let mut currentDay = 1;
+    //     // if (_reward == true) {
+    //     //     currentDay = self.currentDay();
+    //     // }
+    //     let mut currentLevelHash = IHasherDispatcher { contract_address: self.hasher.read() }
+    //         .MiMC5Sponge([_leaf, currentDay], 0);
+    //     let mut left: u256 = 0;
+    //     let mut right: u256 = 0;
+    //     let mut subtree_helper: Array<u256> = ArrayTrait::new();
 
-        for i in 0..self.levels.read() {
-            if currentIndex % 2 == 0 {
-                left = currentLevelHash;
-                right = self.zeros(i);
-                self.filled_subtrees.entry(i.into()).write(currentLevelHash)
-            } else {
-                left = self.filled_subtrees.entry(i.into()).read();
-                right = currentLevelHash;
-                subtree_helper.append(self.filled_subtrees.entry(i.into()).read())
-            }
+    //     for i in 0..self.levels.read() {
+    //         if currentIndex % 2 == 0 {
+    //             left = currentLevelHash;
+    //             right = self.zeros(i);
+    //             self.filled_subtrees.entry(i.into()).write(currentLevelHash)
+    //         } else {
+    //             left = self.filled_subtrees.entry(i.into()).read();
+    //             right = currentLevelHash;
+    //             subtree_helper.append(self.filled_subtrees.entry(i.into()).read())
+    //         }
 
-            currentLevelHash = self.hashLeftRight(left, right);
-            currentIndex = currentIndex / 2;
-        };
-        let newRootIndex: u32 = (self.current_root_index.read() + 1) % ROOT_HISTORY_SIZE;
-        self.current_root_index.write(newRootIndex);
-        self.roots.entry(newRootIndex.into()).write(currentLevelHash);
-        self.next_index.write(_nextIndex + 1);
-        return (_nextIndex.into(), subtree_helper);
-    }
+    //         currentLevelHash = self.hashLeftRight(left, right);
+    //         currentIndex = currentIndex / 2;
+    //     };
+    //     let newRootIndex: u32 = (self.current_root_index.read() + 1);
+    //     self.current_root_index.write(newRootIndex);
+    //     self.roots.entry(newRootIndex.into()).write(currentLevelHash);
+    //     self.next_index.write(_nextIndex + 1);
+    //     return (_nextIndex.into(), subtree_helper);
+    // }
 }
