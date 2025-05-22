@@ -240,7 +240,7 @@ pub mod Pool {
                                 // + reward,
                         );
                     self.profit.write(self.profit.read() + self.withdraw_fee.read());
-                    if (*value[5] > 0 || relayer == contract_address_const::<0>()) {
+                    if (*value[5] > 0 && relayer != contract_address_const::<0>()) {
                         IERC20Dispatcher { contract_address: self.token.read() }
                             .transfer(relayer, *value[5]);
                     }
@@ -261,6 +261,10 @@ pub mod Pool {
             self.profit.write(self.profit.read() - _amount);
             IERC20Dispatcher { contract_address: self.token.read() }
                 .transfer(_recipient, _amount);
+        }
+
+        fn getProfit(self: @ContractState) -> u256 {
+            return self.profit.read();
         }
 
 

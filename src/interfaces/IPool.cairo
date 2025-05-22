@@ -20,4 +20,5 @@ pub trait IPool<TState> {
     fn isSpent(self: @TState, _nullifierHash: u256) -> bool;
     fn setWithdrawFee(ref self: TState, _fee: u256);
     fn withdrawProfit(ref self: TState, _recipient: ContractAddress, _amount: u256);
+    fn getProfit(self: @TState) -> u256;
 }
