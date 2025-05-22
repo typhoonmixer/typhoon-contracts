@@ -251,6 +251,8 @@ pub mod Pool {
 
         fn setWithdrawFee(ref self: ContractState, _fee: u256){
             assert!(get_caller_address() == self.fac.read(), "Only factory");
+            assert!(_fee <= 500, "Fee should be less or equal than 5%");
+            assert!(_fee >= 0, "Fee should be greater or equal than 0");
             let onepercent: u256 = (self.denomination.read()) / BIPS;
             self.withdraw_fee.write((_fee * onepercent) / BIPS);
         }
