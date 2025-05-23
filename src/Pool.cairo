@@ -233,10 +233,15 @@ pub mod Pool {
                             self.current_day.read(),
                             self.withdraws_in_day.read(self.current_day.read()) + 1,
                         );
+                    let relayer_fee = if relayer != contract_address_const::<0>() {
+                        *value[5]
+                    } else {
+                        0
+                    };
                     IERC20Dispatcher { contract_address: self.token.read() }
                         .transfer(
                             recipient,
-                            ((self.denomination.read() - self.withdraw_fee.read()) - *value[5])
+                            ((self.denomination.read() - self.withdraw_fee.read()) - relayer_fee),
                                 // + reward,
                         );
                     self.profit.write(self.profit.read() + self.withdraw_fee.read());
