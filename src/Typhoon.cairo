@@ -1,5 +1,5 @@
 #[starknet::contract]
-pub mod Typhon {
+pub mod Typhoon {
     use super::super::verifier::groth16_verifier::IGroth16VerifierBN254DispatcherTrait;
     use super::super::verifier::groth16_verifier::IGroth16VerifierBN254;
     use starknet::event::EventEmitter;
@@ -47,8 +47,7 @@ pub mod Typhon {
     struct Deposit {
         #[key]
         commitments: Array<u256>,
-        insertedIndexs: Array<u256>,
-        subtreeHelper: Array<Array<u256>>,
+        roots: Array<(u256,u256,u256)>,
         timestamps: u256,
     }
 
@@ -122,24 +121,22 @@ pub mod Typhon {
 
             let mut insertedIndexs: Array<u256> = ArrayTrait::new();
             let mut subtreeHelper: Array<Array<u256>> = ArrayTrait::new();
-
+            let mut roots: Array<(u256,u256,u256)> = ArrayTrait::new();
             for i in 0.._commitment.len() {
                 
                 assert!(self.allowed_pools.read(*_pool.at(i)) == true, "Is not an allowed pool");
                 IPoolDispatcher { contract_address: *_pool.at(i) }.updateDay();
 
-                let (index, subtree) = IPoolDispatcher { contract_address: *_pool.at(i) }
-                    .processDeposit(get_caller_address(), _reward, *_commitment.at(i));
-                insertedIndexs.append(index);
-                subtreeHelper.append(subtree);
+                roots = IPoolDispatcher { contract_address: *_pool.at(i) }
+                    .processDeposit(get_caller_address(), *_commitment.at(i));
+                
             };
 
             self
                 .emit(
                     Deposit {
                         commitments: _commitment,
-                        insertedIndexs: insertedIndexs,
-                        subtreeHelper: subtreeHelper,
+                        roots: roots,
                         timestamps: get_block_timestamp().into(),
                     },
                 );
@@ -154,6 +151,7 @@ pub mod Typhon {
         fn withdraw(
             ref self: ContractState, full_proof_with_hints: Span<felt252>, pool: ContractAddress,
         ) {
+            assert!(self.allowed_pools.read(pool) == true, "Is not an allowed pool");
             IPoolDispatcher { contract_address: pool }.processWithdraw(full_proof_with_hints);
         }
 
@@ -181,14 +179,20 @@ pub mod Typhon {
         /// 
         /// - Panics if the caller is not the owner of the contract
         fn addPool(
-            ref self: ContractState, _token: ContractAddress, _denomination: u256, _day: u256,
+            ref self: ContractState, _token: ContractAddress, _denomination: u256, _day: u256, _fee: u256,
         ) {
             assert!(get_caller_address() == self.owner.read(), "Only owner");
-            let callData: [felt252; 5] = [
+            assert!(
+                self.pools.entry(_token).entry(_denomination).read() == contract_address_const::<0>(),
+                "Pool already exists",
+            );
+            
+            let callData: [felt252; 6] = [
                 _token.try_into().unwrap(), _denomination.try_into().unwrap(),
                 _day.try_into().unwrap(),
                 self.verifier.read().try_into().unwrap(),
                 self.hasher.read().try_into().unwrap(),
+                _fee.try_into().unwrap(),
             ];
             let (pool_address, _) = deploy_syscall(
                 class_hash: self.pool_class_hash.read(),
@@ -210,6 +214,16 @@ pub mod Typhon {
         /// This function returns the Hasher address
         fn hasher(self: @ContractState) -> ContractAddress {
             return self.hasher.read();
+        }
+
+        fn setPoolFee(ref self: ContractState, _pool: ContractAddress, _fee: u256){
+            assert!(get_caller_address() == self.owner.read(), "Only owner");
+            IPoolDispatcher { contract_address: _pool }.setWithdrawFee(_fee);
+        }
+
+        fn withdrawPoolProfit(ref self: ContractState, _pool: ContractAddress, _recipient: ContractAddress, _amount: u256){
+            assert!(get_caller_address() == self.owner.read(), "Only owner");
+            IPoolDispatcher { contract_address: _pool }.withdrawProfit(_recipient, _amount);
         }
     }
 }
