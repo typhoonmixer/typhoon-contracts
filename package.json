@@ -16,6 +16,6 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "get-starknet": "^3.3.3",
-    "starknet": "^6.11.0"
+    "starknet": "^7.6.2"
   }
 }

@@ -1,7 +1,7 @@
 use starknet::{ContractAddress};
 #[starknet::interface]
 pub trait IPool<TState> {
-    fn processDeposit(ref self: TState, _from: ContractAddress, commitment: u256) -> Array<(u256,u256,u256)>;
+    fn processDeposit(ref self: TState, _from: ContractAddress, commitment: u256) -> (Array<Array<u256>>,Array<u256>, u256);
     fn processWithdraw(ref self: TState, full_proof_with_hints: Span<felt252>);
     fn updateDay(ref self: TState);
     fn currentDay(self: @TState) -> u256;
@@ -21,4 +21,6 @@ pub trait IPool<TState> {
     fn setWithdrawFee(ref self: TState, _fee: u256);
     fn withdrawProfit(ref self: TState, _recipient: ContractAddress, _amount: u256);
     fn getProfit(self: @TState) -> u256;
+    fn getCount(self: @TState) -> u256;
+    fn getLeafAt(self: @TState, lv: u256, ll: u256) -> u256;
 }

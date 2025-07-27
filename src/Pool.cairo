@@ -112,6 +112,8 @@ pub mod Pool {
         DD: Map<u256, u256>,
         isValidDD: Map<u256, bool>,
         profit: u256,
+        tower: Map<u256, Map<u256, u256>>,
+        towerLv: u256,
     }
 
     #[constructor]
@@ -161,7 +163,7 @@ pub mod Pool {
         /// # Returns
         /// 
         /// A tuple containing the index of the commitment and an array of u256 values representing the subtree helper
-        fn processDeposit(ref self: ContractState, _from: ContractAddress, commitment: u256) -> Array<(u256,u256,u256)>{
+        fn processDeposit(ref self: ContractState, _from: ContractAddress, commitment: u256) -> (Array<Array<u256>>,Array<u256>, u256) {
             assert!(get_caller_address() == self.fac.read(), "Is not the factory");
             assert!(
                 self.commitments.read(commitment) == false,
@@ -182,9 +184,25 @@ pub mod Pool {
             let roots: Array<(u256,u256,u256)> = insert(
                 ref self, commitment
             );
+            let mut dArr: Array<u256> = ArrayTrait::new();
+            for i in 0..127_u8{
+                let mut d = self.D.read(i.into());
+                dArr.append(d);
+            }
+
+            let mut towerArray: Array<Array<u256>> = ArrayTrait::new();
+            
+            for i in 0..(self.towerLv.read() + 1) {
+                let mut towerAux: Array<u256> = ArrayTrait::new();
+                towerAux.append(self.tower.entry(i).entry(0).read());
+                towerAux.append(self.tower.entry(i).entry(1).read());
+                towerAux.append(self.tower.entry(i).entry(2).read());
+                towerAux.append(self.tower.entry(i).entry(3).read());
+                towerArray.append(towerAux);
+            }
             
             self.commitments.write(commitment, true); 
-            return roots;    
+            return (towerArray, dArr, self.count.read());    
         }
 
         /// Process the withdraw of the denomination from the pool by a specific account
@@ -200,23 +218,24 @@ pub mod Pool {
         fn processWithdraw(ref self: ContractState, full_proof_with_hints: Span<felt252>) {
             let caller = get_caller_address();
             assert!(caller == self.fac.read(), "{:?} Is not the factory", caller);
+            
             let result = IGroth16VerifierBN254Dispatcher { contract_address: self.verifier.read() }
                 .verify_groth16_proof_bn254(full_proof_with_hints);
             match result {
                 Option::Some(value) => {
                     assert!(
-                        !self.nullifier_hashes.read(*value[1]), "The note has been already spent",
+                        !self.nullifier_hashes.read(*value[0]), "The note has been already spent",
                     );
-                    assert!(self.isKnownDD(*value[0]), "Cannot find your merkle root");
-                    self.nullifier_hashes.write(*value[1], true);
-                    let ur = *value[3];
+                    assert!(self.isKnownDD(*value[5]), "Invalid DD");
+                    self.nullifier_hashes.write(*value[0], true);
+                    let ur = *value[2];
                     let fr: felt252 = ur.try_into().unwrap();
                     let recipient: ContractAddress = fr.try_into().unwrap();
-                    let ra = *value[4];
+                    let ra = *value[3];
                     let fr: felt252 = ra.try_into().unwrap();
                     let relayer: ContractAddress = fr.try_into().unwrap();
 
-                    self.emit(Withdraw { recipient: recipient, nullifierHash: *value[1] });
+                    self.emit(Withdraw { recipient: recipient, nullifierHash: *value[0] });
                     self.updateDay();
                     // let mut days = 0;
                     // let mut reward = 0;
@@ -234,7 +253,7 @@ pub mod Pool {
                             self.withdraws_in_day.read(self.current_day.read()) + 1,
                         );
                     let relayer_fee = if relayer != contract_address_const::<0>() {
-                        *value[5]
+                        *value[4]
                     } else {
                         0
                     };
@@ -245,9 +264,9 @@ pub mod Pool {
                                 // + reward,
                         );
                     self.profit.write(self.profit.read() + self.withdraw_fee.read());
-                    if (*value[5] > 0 && relayer != contract_address_const::<0>()) {
+                    if (*value[4] > 0 && relayer != contract_address_const::<0>()) {
                         IERC20Dispatcher { contract_address: self.token.read() }
-                            .transfer(relayer, *value[5]);
+                            .transfer(relayer, *value[4]);
                     }
                 },
                 Option::None => { panic!("Invalid withdraw proof"); },
@@ -291,6 +310,14 @@ pub mod Pool {
         /// This function returns the current day of the contract state
         fn currentDay(self: @ContractState) -> u256 {
             return self.current_day.read();
+        }
+
+        fn getCount(self: @ContractState) -> u256 {
+            return self.count.read();
+        }
+
+        fn getLeafAt(self: @ContractState, lv: u256, ll: u256) -> u256 {
+            return self.tower.entry(lv).entry(ll).read();
         }
 
         /// This function calculates the reward for the liquidity providers
@@ -431,11 +458,12 @@ pub mod Pool {
     fn insert(ref self: ContractState, _leaf: u256) -> Array<(u256, u256, u256)> {
         let mut roots: Array<(u256, u256, u256)> = ArrayTrait::new();
         let _nextIndex: u32 = self.next_index.read();
-        let mut currentIndex: u32 = _nextIndex;
+        
         let mut currentDay = 1;
         let mut leafHash = IHasherDispatcher { contract_address: self.hasher.read() }
             .MiMC5Sponge([_leaf, currentDay], 0);
         let mut _count = self.count.read();
+        assert!(_count < CAPACITY, "Pool is full");
         let mut z: u256 = 0;
         let mut fl: u256 = 0;
         let mut ll: u256 = 0;
@@ -468,6 +496,7 @@ pub mod Pool {
             v = leafHash;
         }
         roots.append((lv, fl, v));
+        insertToTower(ref self, v, ll, lv);
 
         let mut d: u256 = 0;
         if ll == 0 {
@@ -503,6 +532,7 @@ pub mod Pool {
                 v = leafHash;
             }
             roots.append((lv, fl, v));
+            insertToTower(ref self, v, 0, lv);
             d = v;
             dd = IHasherDispatcher { contract_address: self.hasher.read() }
             .MiMC5Sponge([prevDd, d], 0);            
@@ -513,7 +543,17 @@ pub mod Pool {
         return roots;
     }
 
-    
+    fn insertToTower(ref self: ContractState, _leaf: u256, ll: u256, lv: u256) {
+        self.tower.entry(lv).entry(ll).write(_leaf);
+        if(ll == 0){
+            self.tower.entry(lv).entry(1).write(0);
+            self.tower.entry(lv).entry(2).write(0);
+            self.tower.entry(lv).entry(3).write(0);
+        }
+        if(lv > self.towerLv.read()) {
+            self.towerLv.write(lv);
+        }
+    }
     /// This function inserts a new leaf into the Merkle tree
     /// 
     /// # Parameters
