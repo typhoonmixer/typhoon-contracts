@@ -1,34 +1,35 @@
 #[starknet::contract]
 pub mod Pool {
-    use starknet::storage::StoragePathEntry;
-    use starknet::storage::StoragePointerWriteAccess;
-    use starknet::storage::StoragePointerReadAccess;
+    use starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePathEntry,
+        StoragePointerReadAccess, StoragePointerWriteAccess,
+    };
+    use starknet::{
+        ContractAddress, contract_address_const, get_block_timestamp, get_caller_address,
+        get_contract_address, syscalls, ClassHash
+    };
+    use typhoon::interfaces::IERC20::IERC20Dispatcher;
+    use typhoon::interfaces::IHasher::IHasherDispatcher;
+    use typhoon::interfaces::IPool::{IPool, IPoolDispatcher, IPoolDispatcherTrait};
+    use typhoon::verifier::groth16_verifier::IGroth16VerifierBN254Dispatcher;
     use super::super::interfaces::IERC20::IERC20DispatcherTrait;
-    use typhoon::interfaces::IERC20::{IERC20Dispatcher};
-    use typhoon::interfaces::IPool::{IPool};
-    use starknet::storage::StorageMapWriteAccess;
-    use starknet::storage::StorageMapReadAccess;
-    use starknet::{ContractAddress, get_block_timestamp, get_contract_address, get_caller_address, contract_address_const};
-    use starknet::storage::Map;
-    use typhoon::interfaces::IPool::IPoolDispatcherTrait;
-    use super::super::verifier::groth16_verifier::IGroth16VerifierBN254DispatcherTrait;
-    use super::super::verifier::groth16_verifier::IGroth16VerifierBN254;
     use super::super::interfaces::IHasher::IHasherDispatcherTrait;
-    use typhoon::interfaces::IHasher::{IHasherDispatcher};
-    use typhoon::interfaces::IPool::{IPoolDispatcher};
-
-    use typhoon::verifier::groth16_verifier::{IGroth16VerifierBN254Dispatcher};
+    use super::super::verifier::groth16_verifier::{
+        IGroth16VerifierBN254, IGroth16VerifierBN254DispatcherTrait,
+    };
 
     const DAY: u64 = 86400;
     const BIPS: u256 = 100;
     const FIELD_SIZE: u256 =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
     // const ZERO_VALUE: u256 =
-    //     21663839004416932945382355908790599225266501822907911457504978515578255421292; // = keccak256("tornado") % FIELD_SIZE
-    
+    //     21663839004416932945382355908790599225266501822907911457504978515578255421292; // =
+    //     keccak256("tornado") % FIELD_SIZE
+
     const H: u256 = 127;
     const W: u256 = 4;
-    const CAPACITY: u256 = 38597363079105396331939602657575601895140538433663384650215202958913929478144; // CAPACITY = W * (W**H - 1) / (W - 1)
+    const CAPACITY: u256 =
+        38597363079105396331939602657575601895140538433663384650215202958913929478144; // CAPACITY = W * (W**H - 1) / (W - 1)
 
     const ZERO_VALUES: [u256; 32] = [
         0x2fe54c60d3acabf3343a35b6eba15db4821b340f76e741e2249685ed4899af6c,
@@ -70,6 +71,23 @@ pub mod Pool {
     enum Event {
         Deposit: Deposit,
         Withdraw: Withdraw,
+        Add: Add,
+        Upgrade: Upgrade
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct Upgrade {
+        #[key]
+        new_classhash: ClassHash,
+        owner: ContractAddress,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct Add {
+        #[key]
+        level: u256,
+        lvFullIndex: u256,
+        value: u256,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -101,19 +119,13 @@ pub mod Pool {
         verifier: ContractAddress,
         commitments: Map<u256, bool>,
         nullifier_hashes: Map<u256, bool>,
-        roots: Map<u256, u256>,
-        current_root_index: u32,
-        levels: u32,
         hasher: ContractAddress,
-        filled_subtrees: Map<u256, u256>,
-        next_index: u32,
         count: u256,
         D: Map<u256, u256>,
         DD: Map<u256, u256>,
         isValidDD: Map<u256, bool>,
         profit: u256,
-        tower: Map<u256, Map<u256, u256>>,
-        towerLv: u256,
+        leafs: Map<u256, u256>
     }
 
     #[constructor]
@@ -132,42 +144,41 @@ pub mod Pool {
         self.denomination.write(_denomination.try_into().unwrap());
         self.fac.write(get_caller_address());
         self.current_day.write(_current_day.try_into().unwrap());
-        self.levels.write(10);
         let onepercent: u256 = (_denomination.try_into().unwrap()) / BIPS;
         self
             .withdraw_fee
             .write(
                 (onepercent * _fee.into()) / BIPS,
             ); // 0.5% withdraw fee (this can change until mainnet deployment)
-        for i in 0..self.levels.read() {
-            self.filled_subtrees.entry(i.into()).write(self.zeros(i))
-        };
-        self.roots.entry(0).write(self.zeros(self.levels.read() - 1));
+        
     }
 
     #[abi(embed_v0)]
     impl Pool of IPool<ContractState> {
         /// Process the deposit of the denomination in the pool by a specific account
-        /// 
+        ///
         /// # Panics
-        /// 
-        /// This function panics if the caller is not the factory or if the commitment has already been submitted
-        /// 
+        ///
+        /// This function panics if the caller is not the factory or if the commitment has already
+        /// been submitted
+        ///
         /// # Parameters
-        /// 
+        ///
         /// - `self`: The contract state
         /// - `_from`: The address of the account making the deposit
         /// - `reward`: A boolean indicating if the deposit is eligible for a reward
         /// - `commitment`: The commitment to be processed
-        /// 
+        ///
         /// # Returns
-        /// 
-        /// A tuple containing the index of the commitment and an array of u256 values representing the subtree helper
-        fn processDeposit(ref self: ContractState, _from: ContractAddress, commitment: u256) -> (Array<Array<u256>>,Array<u256>, u256) {
+        ///
+        /// A tuple containing the index of the commitment and an array of u256 values representing
+        /// the subtree helper
+        fn processDeposit(
+            ref self: ContractState, _from: ContractAddress, commitment: u256,
+        ) -> (Array<u256>, Array<u256>, u256) {
             assert!(get_caller_address() == self.fac.read(), "Is not the factory");
             assert!(
-                self.commitments.read(commitment) == false,
-                "The commitment has been submitted",
+                self.commitments.read(commitment) == false, "The commitment has been submitted",
             );
             IERC20Dispatcher { contract_address: self.token.read() }
                 .transferFrom(_from, get_contract_address(), self.denomination.read());
@@ -181,44 +192,38 @@ pub mod Pool {
             //         .entry(self.current_day.read())
             //         .write(self.rewarded_liquidity_providers.read(self.current_day.read()) + 1)
             // }
-            let roots: Array<(u256,u256,u256)> = insert(
-                ref self, commitment
-            );
+            insert(ref self, commitment);
+
             let mut dArr: Array<u256> = ArrayTrait::new();
-            for i in 0..127_u8{
+            for i in 0..127_u8 {
                 let mut d = self.D.read(i.into());
                 dArr.append(d);
             }
 
-            let mut towerArray: Array<Array<u256>> = ArrayTrait::new();
-            
-            for i in 0..(self.towerLv.read() + 1) {
-                let mut towerAux: Array<u256> = ArrayTrait::new();
-                towerAux.append(self.tower.entry(i).entry(0).read());
-                towerAux.append(self.tower.entry(i).entry(1).read());
-                towerAux.append(self.tower.entry(i).entry(2).read());
-                towerAux.append(self.tower.entry(i).entry(3).read());
-                towerArray.append(towerAux);
+            let mut leafs: Array<u256> = ArrayTrait::new();
+
+            for i in 0..4_u256 {
+                leafs.append(self.leafs.read(i));
             }
-            
-            self.commitments.write(commitment, true); 
-            return (towerArray, dArr, self.count.read());    
+
+            self.commitments.write(commitment, true);
+            return (leafs, dArr, self.count.read());
         }
 
         /// Process the withdraw of the denomination from the pool by a specific account
-        /// 
+        ///
         /// # Panics
-        /// 
+        ///
         /// This function panics if the caller is not the factory or if the proof is invalid
-        /// 
+        ///
         /// # Parameters
-        /// 
+        ///
         /// - `self`: The contract state
         /// - `full_proof_with_hints`: The proof to be processed
         fn processWithdraw(ref self: ContractState, full_proof_with_hints: Span<felt252>) {
             let caller = get_caller_address();
             assert!(caller == self.fac.read(), "{:?} Is not the factory", caller);
-            
+
             let result = IGroth16VerifierBN254Dispatcher { contract_address: self.verifier.read() }
                 .verify_groth16_proof_bn254(full_proof_with_hints);
             match result {
@@ -261,7 +266,7 @@ pub mod Pool {
                         .transfer(
                             recipient,
                             ((self.denomination.read() - self.withdraw_fee.read()) - relayer_fee),
-                                // + reward,
+                            // + reward,
                         );
                     self.profit.write(self.profit.read() + self.withdraw_fee.read());
                     if (*value[4] > 0 && relayer != contract_address_const::<0>()) {
@@ -273,7 +278,7 @@ pub mod Pool {
             }
         }
 
-        fn setWithdrawFee(ref self: ContractState, _fee: u256){
+        fn setWithdrawFee(ref self: ContractState, _fee: u256) {
             assert!(get_caller_address() == self.fac.read(), "Only factory");
             assert!(_fee <= 500, "Fee should be less or equal than 5%");
             assert!(_fee > 0, "Fee should be greater than 0");
@@ -281,12 +286,11 @@ pub mod Pool {
             self.withdraw_fee.write((_fee * onepercent) / BIPS);
         }
 
-        fn withdrawProfit(ref self: ContractState, _recipient: ContractAddress, _amount: u256){
+        fn withdrawProfit(ref self: ContractState, _recipient: ContractAddress, _amount: u256) {
             assert!(get_caller_address() == self.fac.read(), "Only factory");
             assert!(self.profit.read() >= _amount, "Not enough profit");
             self.profit.write(self.profit.read() - _amount);
-            IERC20Dispatcher { contract_address: self.token.read() }
-                .transfer(_recipient, _amount);
+            IERC20Dispatcher { contract_address: self.token.read() }.transfer(_recipient, _amount);
         }
 
         fn getProfit(self: @ContractState) -> u256 {
@@ -316,20 +320,18 @@ pub mod Pool {
             return self.count.read();
         }
 
-        fn getLeafAt(self: @ContractState, lv: u256, ll: u256) -> u256 {
-            return self.tower.entry(lv).entry(ll).read();
-        }
+        
 
         /// This function calculates the reward for the liquidity providers
-        /// 
+        ///
         /// # Parameters
-        /// 
+        ///
         /// - `self`: The contract state
         /// - `start_day`: The start day of the reward calculation
         /// - `days`: The number of days to calculate the reward for
-        /// 
+        ///
         /// # Returns
-        /// 
+        ///
         /// The calculated reward for the liquidity providers
         fn calculateReward(self: @ContractState, start_day: u256, days: u256) -> u256 {
             let mut accrued_fee: u256 = 0;
@@ -341,7 +343,7 @@ pub mod Pool {
                     + self.rewarded_liquidity_providers.read(s_day + (DAY.into() * i));
                 let wd = self.withdraws_in_day.read(s_day + (DAY.into() * i));
                 accrued_fee = accrued_fee + (wd * self.withdraw_fee.read());
-            };
+            }
             let lps_part = (accrued_fee * 80) / 100; // 80% of the fees goes to the LPs
             let lp_share = lps_part / total_lps;
             return lp_share;
@@ -383,14 +385,14 @@ pub mod Pool {
         }
 
         /// This function check if is a known root
-        /// 
+        ///
         /// # Parameters
-        /// 
+        ///
         /// - `self`: The contract state
         /// - `_root`: The root to check
-        /// 
+        ///
         /// # Returns
-        /// 
+        ///
         /// A boolean indicating if the root is known
         fn isKnownDD(self: @ContractState, _dd: u256) -> bool {
             return self.isValidDD.read(_dd);
@@ -403,19 +405,19 @@ pub mod Pool {
         }
 
         /// This function hashes two values using the MiMC5 hash function
-        /// 
+        ///
         /// # Parameters
-        /// 
+        ///
         /// - `self`: The contract state
         /// - `_left`: The left value to hash
         /// - `_right`: The right value to hash
         ///
         /// # Panics
-        /// 
+        ///
         /// This function panics if the left or right value is outside the field size
-        /// 
+        ///
         /// # Returns
-        /// 
+        ///
         /// The hash of the two values
         fn hashLeftRight(self: @ContractState, _left: u256, _right: u256) -> u256 {
             assert!(_left < FIELD_SIZE, "_left should be inside the field");
@@ -425,25 +427,28 @@ pub mod Pool {
             return result;
         }
 
-        /// This function returns the last root of the pool
-        fn getLastRoot(self: @ContractState) -> u256 {
-            return self.roots.entry(self.current_root_index.read().into()).read();
-        }
+        
 
         /// This function checks if a nullifier hash has been spent
         fn isSpent(self: @ContractState, _nullifierHash: u256) -> bool {
             return self.nullifier_hashes.read(_nullifierHash);
         }
+
+        fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
+            assert!(get_caller_address() == self.fac.read(), "Only factory");
+            syscalls::replace_class_syscall(new_class_hash).unwrap();
+            self.emit(Upgrade { new_classhash: new_class_hash, owner: self.fac.read() });
+        }
     }
 
     /// This function returns the number of days passed since the current day
-    /// 
+    ///
     /// # Parameters
-    /// 
+    ///
     /// - `current_day`: The current day to check
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// The number of days passed since the current day
     fn getDaysPassed(current_day: @u256) -> u256 {
         if (*current_day > get_block_timestamp().into()) {
@@ -455,10 +460,7 @@ pub mod Pool {
         return days;
     }
 
-    fn insert(ref self: ContractState, _leaf: u256) -> Array<(u256, u256, u256)> {
-        let mut roots: Array<(u256, u256, u256)> = ArrayTrait::new();
-        let _nextIndex: u32 = self.next_index.read();
-        
+    fn insert(ref self: ContractState, _leaf: u256){
         let mut currentDay = 1;
         let mut leafHash = IHasherDispatcher { contract_address: self.hasher.read() }
             .MiMC5Sponge([_leaf, currentDay], 0);
@@ -470,51 +472,51 @@ pub mod Pool {
         let mut lv: u256 = 0;
         let mut W_pow_lv: u256 = 1; // W ** lv
 
-        loop{
-          z += W_pow_lv;
-          if(_count < z){
-            fl = 0;
-          } else {
-            fl = (_count - z) / W_pow_lv + 1;
-          }
-          if (fl == 0) {
-            ll = 0;
-          } else {
-            ll = (fl - 1) % W + 1;
-          }
-          if ll < W {
-            break;
-          }
-          lv+=1;
-          W_pow_lv *= W;
-        };
+        loop {
+            z += W_pow_lv;
+            if (_count < z) {
+                fl = 0;
+            } else {
+                fl = (_count - z) / W_pow_lv + 1;
+            }
+            if (fl == 0) {
+                ll = 0;
+            } else {
+                ll = (fl - 1) % W + 1;
+            }
+            if ll < W {
+                break;
+            }
+            lv += 1;
+            W_pow_lv *= W;
+        }
 
         let mut v: u256 = 0;
-        if(lv > 0){
+        if (lv > 0) {
             v = self.D.entry(lv - 1).read();
         } else {
             v = leafHash;
         }
-        roots.append((lv, fl, v));
-        insertToTower(ref self, v, ll, lv);
+        self.emit(Add { level: lv, lvFullIndex: fl, value: v });
+        insertToLeafs(ref self, leafHash);
 
         let mut d: u256 = 0;
         if ll == 0 {
             d = v
         } else {
             d = IHasherDispatcher { contract_address: self.hasher.read() }
-            .MiMC5Sponge([self.D.entry(lv).read(), v], 0);
+                .MiMC5Sponge([self.D.entry(lv).read(), v], 0);
         }
         let mut dd: u256 = 0;
         if fl == ll {
             dd = d;
         } else {
             dd = IHasherDispatcher { contract_address: self.hasher.read() }
-            .MiMC5Sponge([self.DD.entry(lv+1).read(), d], 0);
+                .MiMC5Sponge([self.DD.entry(lv + 1).read(), d], 0);
         }
 
         let mut prevDd = 0;
-        loop{
+        loop {
             self.isValidDD.entry(dd).write(true);
             self.D.entry(lv).write(d);
             self.DD.entry(lv).write(dd);
@@ -523,81 +525,85 @@ pub mod Pool {
             }
             z -= W_pow_lv;
             prevDd = dd;
-            lv-=1;
+            lv -= 1;
             W_pow_lv /= W;
             fl = (_count - z) / W_pow_lv + 1;
-            if lv > 0{
+            if lv > 0 {
                 v = self.D.entry(lv - 1).read();
             } else {
                 v = leafHash;
             }
-            roots.append((lv, fl, v));
-            insertToTower(ref self, v, 0, lv);
+            self.emit(Add { level: lv, lvFullIndex: fl, value: v });
             d = v;
             dd = IHasherDispatcher { contract_address: self.hasher.read() }
-            .MiMC5Sponge([prevDd, d], 0);            
-
+                .MiMC5Sponge([prevDd, d], 0);
         }
         self.count.write(_count + 1);
-        
-        return roots;
     }
 
-    fn insertToTower(ref self: ContractState, _leaf: u256, ll: u256, lv: u256) {
-        self.tower.entry(lv).entry(ll).write(_leaf);
-        if(ll == 0){
-            self.tower.entry(lv).entry(1).write(0);
-            self.tower.entry(lv).entry(2).write(0);
-            self.tower.entry(lv).entry(3).write(0);
+    fn insertToLeafs(ref self: ContractState, value: u256){
+        let mut curIndex = 0;
+        if(self.leafs.read(0) == 0){
+            curIndex = 0;
+        } else if(self.leafs.read(1) == 0){
+            curIndex = 1;
+        } else if(self.leafs.read(2) == 0){
+            curIndex = 2;
+        } else if(self.leafs.read(3) == 0){
+            curIndex = 3;
+        } else {
+            for i in 0..4_u256 {
+                self.leafs.entry(i).write(0);
+            };
+            curIndex = 0;
         }
-        if(lv > self.towerLv.read()) {
-            self.towerLv.write(lv);
-        }
+        self.leafs.entry(curIndex).write(value); 
     }
     /// This function inserts a new leaf into the Merkle tree
-    /// 
-    /// # Parameters
-    /// 
-    /// - `self`: The contract state
-    /// - `_leaf`: The leaf to insert
-    /// - `_reward`: A boolean indicating if the leaf is eligible for a reward
-    /// 
-    /// # Returns
-    /// 
-    /// A tuple containing the index of the leaf and an array of u256 values representing the subtree helper
-    // fn insert(
-    //     ref self: ContractState, _leaf: u256,
-    // ) -> (u256, Array<u256>) {
-    //     let _nextIndex: u32 = self.next_index.read();
-    //     let mut currentIndex: u32 = _nextIndex;
-    //     let mut currentDay = 1;
-    //     // if (_reward == true) {
-    //     //     currentDay = self.currentDay();
-    //     // }
-    //     let mut currentLevelHash = IHasherDispatcher { contract_address: self.hasher.read() }
-    //         .MiMC5Sponge([_leaf, currentDay], 0);
-    //     let mut left: u256 = 0;
-    //     let mut right: u256 = 0;
-    //     let mut subtree_helper: Array<u256> = ArrayTrait::new();
+///
+/// # Parameters
+///
+/// - `self`: The contract state
+/// - `_leaf`: The leaf to insert
+/// - `_reward`: A boolean indicating if the leaf is eligible for a reward
+///
+/// # Returns
+///
+/// A tuple containing the index of the leaf and an array of u256 values representing the
+/// subtree helper
+// fn insert(
+//     ref self: ContractState, _leaf: u256,
+// ) -> (u256, Array<u256>) {
+//     let _nextIndex: u32 = self.next_index.read();
+//     let mut currentIndex: u32 = _nextIndex;
+//     let mut currentDay = 1;
+//     // if (_reward == true) {
+//     //     currentDay = self.currentDay();
+//     // }
+//     let mut currentLevelHash = IHasherDispatcher { contract_address: self.hasher.read() }
+//         .MiMC5Sponge([_leaf, currentDay], 0);
+//     let mut left: u256 = 0;
+//     let mut right: u256 = 0;
+//     let mut subtree_helper: Array<u256> = ArrayTrait::new();
 
     //     for i in 0..self.levels.read() {
-    //         if currentIndex % 2 == 0 {
-    //             left = currentLevelHash;
-    //             right = self.zeros(i);
-    //             self.filled_subtrees.entry(i.into()).write(currentLevelHash)
-    //         } else {
-    //             left = self.filled_subtrees.entry(i.into()).read();
-    //             right = currentLevelHash;
-    //             subtree_helper.append(self.filled_subtrees.entry(i.into()).read())
-    //         }
+//         if currentIndex % 2 == 0 {
+//             left = currentLevelHash;
+//             right = self.zeros(i);
+//             self.filled_subtrees.entry(i.into()).write(currentLevelHash)
+//         } else {
+//             left = self.filled_subtrees.entry(i.into()).read();
+//             right = currentLevelHash;
+//             subtree_helper.append(self.filled_subtrees.entry(i.into()).read())
+//         }
 
     //         currentLevelHash = self.hashLeftRight(left, right);
-    //         currentIndex = currentIndex / 2;
-    //     };
-    //     let newRootIndex: u32 = (self.current_root_index.read() + 1);
-    //     self.current_root_index.write(newRootIndex);
-    //     self.roots.entry(newRootIndex.into()).write(currentLevelHash);
-    //     self.next_index.write(_nextIndex + 1);
-    //     return (_nextIndex.into(), subtree_helper);
-    // }
+//         currentIndex = currentIndex / 2;
+//     };
+//     let newRootIndex: u32 = (self.current_root_index.read() + 1);
+//     self.current_root_index.write(newRootIndex);
+//     self.roots.entry(newRootIndex.into()).write(currentLevelHash);
+//     self.next_index.write(_nextIndex + 1);
+//     return (_nextIndex.into(), subtree_helper);
+// }
 }

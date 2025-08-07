@@ -11,8 +11,8 @@ const provider = new RpcProvider({ nodeUrl: "https://starknet-sepolia.public.bla
 // const account = new Account(provider, accAddress, process.env.PRIVATE_KEY);
 
 async function test(){
-    const { abi: verifierAbi } = await provider.getClassAt("0x1ecfa02917589df3480354bd8e0be7c19c68462493fe52cb3ce396dc1e2019a");
-    const verifierContract = new Contract(verifierAbi, "0x1ecfa02917589df3480354bd8e0be7c19c68462493fe52cb3ce396dc1e2019a", provider);
+    const { abi: verifierAbi } = await provider.getClassAt("0x83157f469d0ab0d9cbbad6c76626407617da9aaa4faecf580f01391081cb02");
+    const verifierContract = new Contract(verifierAbi, "0x83157f469d0ab0d9cbbad6c76626407617da9aaa4faecf580f01391081cb02", provider);
 
     const pubin = await verifierContract.verify_groth16_proof_bn254(calldata);
     return pubin

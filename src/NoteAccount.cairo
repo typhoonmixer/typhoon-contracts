@@ -1,8 +1,8 @@
 #[starknet::contract]
 pub mod NoteAccount {
+    use core::num::traits::Zero;
     use core::starknet::eth_address::EthAddress;
     use core::starknet::storage::{Mutable, StoragePath};
-    use starknet::SyscallResultTrait;
     use starknet::eth_signature::verify_eth_signature;
     use starknet::secp256_trait::{Signature, recover_public_key, signature_from_vrs};
     use starknet::secp256k1::Secp256k1Point;
@@ -10,17 +10,60 @@ pub mod NoteAccount {
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePathEntry,
         StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::{
+        ClassHash, ContractAddress, SyscallResultTrait, contract_address_const, get_caller_address,
+        get_contract_address, syscalls,
+    };
     use typhoon::interfaces::INoteAccount::{INoteAccount, INoteAccountDispatcher};
+
+    #[event]
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        Upgrade: Upgrade,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct Upgrade {
+        #[key]
+        new_classhash: ClassHash,
+        owner: ContractAddress,
+    }
+
+    struct Node {
+        value: felt252,
+        next: u256,
+        prev: u256,
+    }
 
     #[storage]
     struct Storage {
         notes: Map<EthAddress, Map<u256, Map<u256, u256>>>,
         notesCount: Map<EthAddress, u256>,
         usedMsgHash: Map<u256, bool>,
+        owner: ContractAddress,
+        // telegram username hash to Eth address
+        userIdToAddress: Map<u256, EthAddress>,
+        // Eth address to telegram username hash
+        addressToUserId: Map<EthAddress, u256>,
+        // eth address will store the pub key X and Y
+        addressToPubKey: Map<EthAddress, Map<u256, u256>>,
+        values: Map<EthAddress, Map<u256, Map<u256, u256>>>,
+        // Linked list pointers
+        next: Map<EthAddress, Map<u256, u256>>,
+        prev: Map<EthAddress, Map<u256, u256>>,
+        // Pointers to the list ends
+        head: Map<EthAddress, u256>,
+        tail: Map<EthAddress, u256>,
+        // Incremental ID for new elements
+        next_id: Map<EthAddress, u256>,
+        // Number of elements
+        length: Map<EthAddress, u256>,
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState) {}
+    fn constructor(ref self: ContractState, owner: ContractAddress) {
+        self.owner.write(owner);
+    }
 
     #[abi(embed_v0)]
     impl NoteAccount of INoteAccount<ContractState> {
@@ -52,13 +95,7 @@ pub mod NoteAccount {
             assert!(self.usedMsgHash.entry(msg_hash).read() == false, "msg hash already used");
             self.usedMsgHash.entry(msg_hash).write(true);
             verify_signature(pubKey, msg_hash, r, s, v);
-            let mut i: u256 = 0;
-            for d in encryptedNote {
-                self.notes.entry(pubKey).entry(self.notesCount.read(pubKey)).entry(i).write(*d);
-                i += 1;
-            }
-
-            self.notesCount.entry(pubKey).write(self.notesCount.read(pubKey) + 1);
+            push_back(ref self, pubKey, encryptedNote);
         }
 
         /// Retrieves the notes associated with a specific public key.
@@ -72,23 +109,28 @@ pub mod NoteAccount {
         ///
         /// - An array of tuples containing the notes data.
         fn getNotes(self: @ContractState, pubKey: EthAddress) -> Array<Array<u256>> {
-            let mut notes: Array = ArrayTrait::<Array<u256>>::new();
-            let mut i: u256 = 0;
-            if (self.notesCount.read(pubKey) == 0) {
-                let mut a: Array<Array<u256>> = ArrayTrait::<Array<u256>>::new();
-                return a;
-            }
+            let mut notes: Array<Array<u256>> = ArrayTrait::new();
+            let len = self.length.entry(pubKey).read();
+            // for i in 0..len{
+            //     let mut notesAux: Array<u256> = ArrayTrait::new();
+            //     for j in 0..25_u256{
+            //         notesAux.append(self.values.entry(pubKey).entry(i).entry(j).read());
+            //     };
+            //     notes.append(notesAux);
+            // };
+            let mut current = self.head.entry(pubKey).read();
+            let mut i = self.length.entry(pubKey).read();
             loop {
-                let mut note: Array<u256> = ArrayTrait::<u256>::new();
-                for j in 0..25_u256 {
-                    let d = self.notes.entry(pubKey).entry(i).entry(j).read();
-                    note.append(d);
-                };
-                notes.append(note);
-                i += 1;
-                if (self.notesCount.read(pubKey) == i) {
+                if (i == 0) {
                     break;
                 }
+                let mut notesAux: Array<u256> = ArrayTrait::new();
+                for j in 0..25_u256 {
+                    notesAux.append(self.values.entry(pubKey).entry(current).entry(j).read());
+                }
+                notes.append(notesAux);
+                current = self.next.entry(pubKey).entry(current).read();
+                i -= 1;
             }
             return notes;
         }
@@ -115,22 +157,39 @@ pub mod NoteAccount {
             r: u256,
             s: u256,
             v: u32,
-            newNotes: Span<Span<u256>>,
+            noteIndex: u256,
         ) {
             assert!(self.usedMsgHash.entry(msg_hash).read() == false, "msg hash already used");
+            assert!(noteIndex < self.length.entry(pubKey).read(), "invalid note index");
             self.usedMsgHash.entry(msg_hash).write(true);
             verify_signature(pubKey, msg_hash, r, s, v);
-            let mut i: u32 = 0;
-            eraseNotes(ref self, pubKey);
-            for i in 0..newNotes.len() {
+            let mut id = self.head.entry(pubKey).read();
+            let mut i = noteIndex;
+            loop {
+                if (i == 0) {
+                    break;
+                }
                 
-                for j in 0..25_u32 {
-                    let d = *newNotes[i][j];
-                    self.notes.entry(pubKey).entry(i.into()).entry(j.into()).write(d);
-                };
-                
-            }
-            self.notesCount.entry(pubKey).write(newNotes.len().into());
+                id = self.next.entry(pubKey).entry(id).read();
+                i -= 1;
+            };
+            remove(ref self, id, pubKey);
+        }
+
+        fn upgrade(ref self: ContractState, new_class_hash: ClassHash) {
+            assert!(!new_class_hash.is_zero(), "Class hash cannot be zero");
+            assert!(get_caller_address() == self.owner.read(), "Only owner");
+            syscalls::replace_class_syscall(new_class_hash).unwrap();
+            self.emit(Upgrade { new_classhash: new_class_hash, owner: self.owner.read() });
+        }
+
+        fn setOwner(ref self: ContractState, new_owner: ContractAddress) {
+            assert!(new_owner != contract_address_const::<0>(), "New owner cannot be zero address");
+            assert!(get_caller_address() == self.owner.read(), "Only owner");
+            self.owner.write(new_owner);
+        }
+        fn getOwner(self: @ContractState) -> ContractAddress {
+            return self.owner.read();
         }
     }
 
@@ -152,6 +211,56 @@ pub mod NoteAccount {
         verify_eth_signature(msg_hash, signature, eth_address);
     }
 
+    fn push_back(ref self: ContractState, pubKey: EthAddress, encryptedNote: Span<u256>) {
+        let id = self.next_id.entry(pubKey).read();
+        self.next_id.entry(pubKey).write(id + 1);
+
+        let mut i: u256 = 0;
+        for d in encryptedNote {
+            self.values.entry(pubKey).entry(id).entry(i).write(*d);
+            i += 1;
+        }
+
+        let len = self.length.entry(pubKey).read();
+        if len == 0 {
+            self.head.entry(pubKey).write(id);
+            self.tail.entry(pubKey).write(id);
+        } else {
+            let last = self.tail.entry(pubKey).read();
+            self.next.entry(pubKey).entry(last).write(id);
+            self.prev.entry(pubKey).entry(id).write(last);
+            self.tail.entry(pubKey).write(id);
+        }
+
+        self.length.entry(pubKey).write(len + 1);
+    }
+
+    fn remove(ref self: ContractState, id: u256, pubKey: EthAddress) {
+        let prev = self.prev.entry(pubKey).read(id);
+        let next = self.next.entry(pubKey).read(id);
+
+        if self.values.entry(pubKey).entry(prev).entry(0).read() != 0 {
+            self.next.entry(pubKey).entry(prev).write(next);
+        } else {
+            self.head.entry(pubKey).write(next);
+        }
+
+        if self.values.entry(pubKey).entry(next).entry(0).read() != 0 {
+            self.prev.entry(pubKey).entry(next).write(prev);
+        } else {
+            self.tail.entry(pubKey).write(prev);
+        }
+
+        for i in 0..25_u256 {
+            self.values.entry(pubKey).entry(id).entry(i).write(0);
+        }
+        self.prev.entry(pubKey).entry(id).write(0);
+        self.next.entry(pubKey).entry(id).write(0);
+
+        self.length.entry(pubKey).write(self.length.entry(pubKey).read() - 1);
+    }
+
+
     /// Erases the notes associated with a specific public key.
     ///
     /// # Parameters
@@ -164,7 +273,7 @@ pub mod NoteAccount {
         loop {
             for j in 0..25_u256 {
                 self.notes.entry(pubKey).entry(i).entry(j).write(0);
-            };
+            }
             i += 1;
             if (self.notesCount.read(pubKey) == i) {
                 break;

@@ -35,8 +35,8 @@ import dotenv from 'dotenv'
 
 dotenv.config({ path: '../.env' })
 
-const provider = new RpcProvider({ nodeUrl: "https://starknet-sepolia.public.blastapi.io/rpc/v0_8"});
-const accAddress = "0x014c78b080b3e8b9d56ea74f05acdd9de473894998319761619eec15d415fa0a"
+const provider = new RpcProvider({ nodeUrl: "https://starknet-mainnet.public.blastapi.io/rpc/v0_8"});
+const accAddress = "0x03f2039a5c1742f8d90985eabaddf691090176511ebe9d3bcd042b1914918e64"
 const ethAddress = "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7"
 const strkAddress = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
 const tokens = [ethAddress, strkAddress]
@@ -61,11 +61,15 @@ async function deploy() {
     // let verification = await verifier.verify_groth16_proof_bn254(callData)
     // return verification
 
-   
+    const noteCallData = new CallData(noteAccountSierra.abi)
+    const noteConstructor = noteCallData.compile('constructor', {
+        owner: accAddress,
+    });
 
     let noteAccountResponse = await account.declareAndDeploy({
         contract: noteAccountSierra,
         casm: noteAccountCasm,
+        constructorCalldata: noteConstructor
     });
     await provider.waitForTransaction(noteAccountResponse.deploy.transaction_hash);
     console.log("note account deployed at ", noteAccountResponse.deploy.contract_address)
@@ -89,20 +93,20 @@ async function deploy() {
     console.log("hasher deployed at ", hasherResponse.deploy.contract_address)
 
 
-    console.log("declaring pool...")
-    let declaredPool = await account.declare({
-        contract: poolSierra,
-        casm: poolCasm
-    })
+    // console.log("declaring pool...")
+    // let declaredPool = await account.declare({
+    //     contract: poolSierra,
+    //     casm: poolCasm
+    // })
 
-    await provider.waitForTransaction(declaredPool.transaction_hash);
+    // await provider.waitForTransaction(declaredPool.transaction_hash);
 
     const typhoonCallData = new CallData(typhoonSierra.abi)
     const typhoonConstructor = typhoonCallData.compile('constructor', {
         owner: accAddress,
         _hasher: hasherResponse.deploy.contract_address,
         _verifier: verifierResponse.deploy.contract_address,
-        _poolClassHash: declaredPool.class_hash,
+        _poolClassHash: "0x041b7800cc74dbfc96bbbbacbc55b90e2ce2b0543aadc0603ceb12f88ba5fa65",
     });
 
     console.log("deploying typhoon...")
@@ -114,33 +118,33 @@ async function deploy() {
     await provider.waitForTransaction(typhoonResponse.deploy.transaction_hash);
     console.log("typhoon deployed at ", typhoonResponse.deploy.contract_address)
 
-    const { abi: typhoonAbi } = await provider.getClassAt(typhoonResponse.deploy.contract_address);
-    if (typhoonAbi === undefined) {
-        throw new Error('no abi.');
-    }
-    const typhoon = new Contract(typhoonAbi, typhoonResponse.deploy.contract_address, provider);
-    typhoon.connect(account)
+    // const { abi: typhoonAbi } = await provider.getClassAt(typhoonResponse.deploy.contract_address);
+    // if (typhoonAbi === undefined) {
+    //     throw new Error('no abi.');
+    // }
+    // const typhoon = new Contract(typhoonAbi, typhoonResponse.deploy.contract_address, provider);
+    // typhoon.connect(account)
 
 
 
-    let baseDenomination = BigInt('1' + '0'.repeat(16))
+    // let baseDenomination = BigInt('1' + '0'.repeat(16))
 
-    let now = new Date();
-    now.setUTCHours(0, 0, 0, 0);
-    let currentDay = Math.floor(now.getTime() / 1000);
+    // let now = new Date();
+    // now.setUTCHours(0, 0, 0, 0);
+    // let currentDay = Math.floor(now.getTime() / 1000);
 
-    console.log("deploying and adding pools...")
-    for (let i = 0; i < 2; i++) {
-        for (let j = 0; j < 5; j++) {
-            const call = typhoon.populate('addPool', [tokens[i], baseDenomination * BigInt(10 ** j), currentDay, BigInt(500)]);
-            const res = await typhoon.addPool(call.calldata);
+    // console.log("deploying and adding pools...")
+    // for (let i = 0; i < 2; i++) {
+    //     for (let j = 0; j < 5; j++) {
+    //         const call = typhoon.populate('addPool', [tokens[i], baseDenomination * BigInt(10 ** j), currentDay, BigInt(500)]);
+    //         const res = await typhoon.addPool(call.calldata);
 
-            await provider.waitForTransaction(res.transaction_hash);
-        }
-    }
-    console.log("pools deployed and added")
-    console.log("Typhoon address: ", typhoon.address)
-    return [typhoon.address, verifierResponse.deploy.contract_address, hasherResponse.deploy.contract_address, noteAccountResponse.deploy.contract_address];
+    //         await provider.waitForTransaction(res.transaction_hash);
+    //     }
+    // }
+    // console.log("pools deployed and added")
+    console.log("Typhoon address: ", typhoonResponse.deploy.contract_address)
+    return [typhoonResponse.deploy.contract_address, verifierResponse.deploy.contract_address, hasherResponse.deploy.contract_address, noteAccountResponse.deploy.contract_address];
 }
 
 deploy().then((typhoon) => {
@@ -148,7 +152,7 @@ deploy().then((typhoon) => {
     const jsonString = JSON.stringify({ "typhoon": typhoon[0], "verifier": typhoon[1], "hasher": typhoon[2], "noteAccount": typhoon[3] }, null, 2); // The third argument adds indentation for readability
 
     // Write the JSON string to a file
-    fs.writeFile('typhoon.json', jsonString, 'utf8', (err) => {
+    fs.writeFile('typhoon-mainnet.json', jsonString, 'utf8', (err) => {
         if (err) {
             console.error('An error occurred while writing JSON Object to File:', err);
         } else {
