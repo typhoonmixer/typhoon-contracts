@@ -5,19 +5,19 @@ use snforge_std::{declare, ContractClassTrait, DeclareResultTrait};
 use typhoon::interfaces::IHasher::{IHasherSafeDispatcher, IHasherDispatcher, IHasherSafeDispatcherTrait, IHasherDispatcherTrait};
 
 fn deploy_contract(name: ByteArray) -> ContractAddress {
-    println!("testando essa porra3");
+
     let contract = declare(name).unwrap().contract_class();
-    println!("testando essa porra4");
+    
     let (contract_address, _) = contract.deploy(@array![]).unwrap();
-    println!("testando essa porra5");
+  
     contract_address
 }
 
 #[test]
 fn test_increase_balance() {
-    println!("testando essa porra");
+   
     let contract_address = deploy_contract("Hasher");
-    println!("testando essa porra2");
+   
 
     let k: u256 = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
 
