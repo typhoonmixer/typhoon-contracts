@@ -54,7 +54,8 @@ pub mod Typhoon {
         d: Array<u256>,
         count: u256,
         timestamps: u256,
-        tower: Array<Array<u256>>,
+        leafs: Array<u256>,
+        pool: ContractAddress
     }
 
     
@@ -65,13 +66,10 @@ pub mod Typhoon {
         nullifier_hashes: Map<u256, bool>,
         allowed_pools: Map<ContractAddress, bool>,
         pools: Map<ContractAddress, Map<u256, ContractAddress>>,
+        poolsList: Map<ContractAddress, Map<u256, ContractAddress>>,
+        poolsListLen: Map<ContractAddress, u256>,
         owner: ContractAddress,
         hasher: ContractAddress,
-        levels: u32,
-        filled_subtrees: Map<u256, u256>,
-        roots: Map<u256, u256>,
-        current_root_index: u32,
-        next_index: u32,
         verifier: ContractAddress,
         pool_salt: felt252,
         pool_class_hash: ClassHash,
@@ -114,18 +112,18 @@ pub mod Typhoon {
             assert!(self.allowed_pools.read(_pool) == true, "Is not an allowed pool");
             IPoolDispatcher { contract_address: _pool }.updateDay();
 
-            let (ta, d, c) = IPoolDispatcher { contract_address: _pool }
+            let (l, d, c) = IPoolDispatcher { contract_address: _pool }
                 .processDeposit(get_caller_address(), _commitment);
 
             self
                 .emit(
                     Deposit {
                         commitments: _commitment,
-                        // roots: res,
                         d: d,
                         count: c,
                         timestamps: get_block_timestamp().into(),
-                        tower: ta,
+                        leafs: l,
+                        pool: _pool
                     },
                 );
         }
@@ -137,11 +135,16 @@ pub mod Typhoon {
         /// - `full_proof_with_hints`: The proof and hints for the withdrawal
         /// - `pool`: The pool from which the withdrawal will be made
         fn withdraw(
-            ref self: ContractState, full_proof_with_hints: Span<felt252>, pool: ContractAddress,
+            ref self: ContractState, full_proof_with_hints: Span<felt252>
         ) {
+            let mut proof = full_proof_with_hints;
+            let p: felt252 = *proof.pop_front().unwrap();
+            let pool: ContractAddress = p.try_into().unwrap();
+            // let pool: Contr = proof.pop_front();
+            
             assert!(self.allowed_pools.read(pool) == true, "Is not an allowed pool");
-            // let mut proof = full_proof_with_hints;
-            IPoolDispatcher { contract_address: pool }.processWithdraw(full_proof_with_hints);
+            
+            IPoolDispatcher { contract_address: pool }.processWithdraw(proof);
         }
 
         /// This function returns a pool address for a given token and denomination
@@ -199,6 +202,8 @@ pub mod Typhoon {
             self.pools.entry(_token).entry(_denomination).write(pool_address);
             self.pool_salt.write(self.pool_salt.read() + 1);
             self.allowed_pools.entry(pool_address).write(true);
+            self.poolsList.entry(_token).entry(self.poolsListLen.entry(_token).read()).write(pool_address);
+            self.poolsListLen.entry(_token).write(self.poolsListLen.entry(_token).read()+1);
         }
 
         /// This function returns the verifier address
@@ -242,6 +247,22 @@ pub mod Typhoon {
             assert!(get_caller_address() == self.owner.read(), "Only owner");
             syscalls::replace_class_syscall(new_class_hash).unwrap();
             self.emit(Upgrade { new_classhash: new_class_hash, owner: self.owner.read() });
+        }
+
+        fn getTokensByPool(self: @ContractState, token: ContractAddress) -> Array<ContractAddress>{
+            let mut pools: Array<ContractAddress> = ArrayTrait::new();
+            for i in 0..(self.poolsListLen.entry(token).read()){
+                pools.append(self.poolsList.entry(token).entry(i).read());
+            };
+            return pools;
+        }
+
+        fn upgradePools(ref self: ContractState, new_class_hash: ClassHash, token: ContractAddress){
+            assert!(!new_class_hash.is_zero(), "Class hash cannot be zero");
+            assert!(get_caller_address() == self.owner.read(), "Only owner");
+            for i in 0..(self.poolsListLen.entry(token).read()){
+                IPoolDispatcher { contract_address: self.poolsList.entry(token).entry(i).read() }.upgrade(new_class_hash);
+            }
         }
     }
 }
