@@ -1,21 +1,44 @@
+use starknet::{ClassHash, ContractAddress};
+
+#[starknet::interface]
+pub trait IBraavosAccountFactory<TState> {
+    fn deploy_braavos_account(
+        self: @TState, stark_pub_key: felt252, additional_deployment_params: Span<felt252>,
+    ) -> ContractAddress;
+}
+
+#[starknet::interface]
+pub trait IUniversalDeployer<TState> {
+    fn deploy_contract(
+        self: @TState,
+        class_hash: ClassHash,
+        salt: felt252,
+        from_zero: bool,
+        calldata: Span<felt252>,
+    ) -> ContractAddress;
+}
+
 #[starknet::contract]
 pub mod Pool {
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePathEntry,
         StoragePointerReadAccess, StoragePointerWriteAccess,
     };
+    use starknet::syscalls::deploy_syscall;
     use starknet::{
-        ContractAddress, contract_address_const, get_block_timestamp, get_caller_address,
-        get_contract_address, syscalls, ClassHash
+        ClassHash, ContractAddress, EthAddress, get_block_timestamp, get_caller_address,
+        get_contract_address, syscalls,
     };
     use typhoon::interfaces::IERC20::IERC20Dispatcher;
     use typhoon::interfaces::IHasher::IHasherDispatcher;
-    use typhoon::interfaces::IPool::{IPool, IPoolDispatcher, IPoolDispatcherTrait};
+    use typhoon::interfaces::IPool::IPool;
     use typhoon::verifier::groth16_verifier::IGroth16VerifierBN254Dispatcher;
     use super::super::interfaces::IERC20::IERC20DispatcherTrait;
     use super::super::interfaces::IHasher::IHasherDispatcherTrait;
-    use super::super::verifier::groth16_verifier::{
-        IGroth16VerifierBN254, IGroth16VerifierBN254DispatcherTrait,
+    use super::super::verifier::groth16_verifier::IGroth16VerifierBN254DispatcherTrait;
+    use super::{
+        IBraavosAccountFactoryDispatcher, IBraavosAccountFactoryDispatcherTrait,
+        IUniversalDeployerDispatcher, IUniversalDeployerDispatcherTrait,
     };
 
     const DAY: u64 = 86400;
@@ -25,6 +48,17 @@ pub mod Pool {
     // const ZERO_VALUE: u256 =
     //     21663839004416932945382355908790599225266501822907911457504978515578255421292; // =
     //     keccak256("tornado") % FIELD_SIZE
+
+    const BRAAVOS_FACTORY: ContractAddress =
+        0x3d94f65ebc7552eb517ddb374250a9525b605f25f4e41ded6e7d7381ff1c2e8
+        .try_into()
+        .unwrap();
+
+    const UDC_ADDRESS: ContractAddress =
+        0x04a64cd09a853868621d94cae9952b106f2c36a3f81260f85de6696c6b050221
+        .try_into()
+        .unwrap();
+
 
     const H: u256 = 127;
     const W: u256 = 4;
@@ -72,7 +106,7 @@ pub mod Pool {
         Deposit: Deposit,
         Withdraw: Withdraw,
         Add: Add,
-        Upgrade: Upgrade
+        Upgrade: Upgrade,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -106,6 +140,36 @@ pub mod Pool {
         nullifierHash: u256,
     }
 
+    #[derive(Copy, Drop, Serde, starknet::Store)]
+    struct Secp256r1PubKey {
+        pub_x: u256,
+        pub_y: u256,
+    }
+
+    #[derive(Copy, Drop, PartialEq, Serde, starknet::Store)]
+    enum SignerType {
+        #[default]
+        Empty,
+        Stark,
+        Secp256r1,
+        Webauthn,
+        MOA,
+    }
+
+    #[derive(Copy, Drop, Serde)]
+    struct AdditionalDeploymentParams {
+        account_implementation: ClassHash,
+        signer_type: SignerType,
+        secp256r1_signer: Secp256r1PubKey,
+        multisig_threshold: usize,
+        withdrawal_limit_low: u128,
+        fee_rate: u128,
+        stark_fee_rate: u128,
+        chain_id: felt252,
+        deployment_params_signature: (felt252, felt252),
+    }
+
+
     #[storage]
     struct Storage {
         current_day: u256,
@@ -125,7 +189,7 @@ pub mod Pool {
         DD: Map<u256, u256>,
         isValidDD: Map<u256, bool>,
         profit: u256,
-        leafs: Map<u256, u256>
+        leafs: Map<u256, u256>,
     }
 
     #[constructor]
@@ -150,7 +214,6 @@ pub mod Pool {
             .write(
                 (onepercent * _fee.into()) / BIPS,
             ); // 0.5% withdraw fee (this can change until mainnet deployment)
-        
     }
 
     #[abi(embed_v0)]
@@ -177,9 +240,7 @@ pub mod Pool {
             ref self: ContractState, _from: ContractAddress, commitment: u256,
         ) -> (Array<u256>, Array<u256>, u256) {
             assert!(get_caller_address() == self.fac.read(), "Is not the factory");
-            assert!(
-                self.commitments.read(commitment) == false, "The commitment has been submitted",
-            );
+            assert!(!self.commitments.read(commitment), "The commitment has been submitted");
             IERC20Dispatcher { contract_address: self.token.read() }
                 .transferFrom(_from, get_contract_address(), self.denomination.read());
             self
@@ -223,9 +284,31 @@ pub mod Pool {
         fn processWithdraw(ref self: ContractState, full_proof_with_hints: Span<felt252>) {
             let caller = get_caller_address();
             assert!(caller == self.fac.read(), "{:?} Is not the factory", caller);
-
+            let mut proof = full_proof_with_hints;
+            // stealth address case
+            let mut isStealth = false;
+            let mut stealth_address: ContractAddress = 0.try_into().unwrap();
+            let mut params = array![];
+            let mut pubKey = 0;
+            let mut id: u8 = 0;
+            if (*proof[0] == 23455079491982408) {
+                if (*proof[1] == 0) {
+                    params = array![*proof[3]];
+                    pubKey = *proof[2];
+                    proof = proof.slice(4, proof.len() - 4);
+                } else if (*proof[1] == 1) {
+                    params = array![*proof[3], *proof[4], *proof[5], *proof[6]];
+                    pubKey = *proof[2];
+                    proof = proof.slice(7, proof.len() - 7);
+                    id = 1;
+                }
+                // let params: [felt252; 4] = [*proof[2], *proof[3], *proof[4], *proof[5]];
+                // stealth_address = deployStealthAddress(ref self, *proof[1], params.span());
+                isStealth = true;
+                // proof = proof.slice(6, proof.len() - 6);
+            }
             let result = IGroth16VerifierBN254Dispatcher { contract_address: self.verifier.read() }
-                .verify_groth16_proof_bn254(full_proof_with_hints);
+                .verify_groth16_proof_bn254(proof);
             match result {
                 Option::Some(value) => {
                     assert!(
@@ -236,6 +319,12 @@ pub mod Pool {
                     let ur = *value[2];
                     let fr: felt252 = ur.try_into().unwrap();
                     let recipient: ContractAddress = fr.try_into().unwrap();
+                    if (isStealth) {
+                        stealth_address = deployStealthAddress(ref self, pubKey, params.span(), id);
+                        assert!(
+                            recipient == stealth_address, "Invalid recipient for stealth address",
+                        );
+                    }
                     let ra = *value[3];
                     let fr: felt252 = ra.try_into().unwrap();
                     let relayer: ContractAddress = fr.try_into().unwrap();
@@ -257,7 +346,7 @@ pub mod Pool {
                             self.current_day.read(),
                             self.withdraws_in_day.read(self.current_day.read()) + 1,
                         );
-                    let relayer_fee = if relayer != contract_address_const::<0>() {
+                    let relayer_fee = if relayer != 0.try_into().unwrap() {
                         *value[4]
                     } else {
                         0
@@ -269,7 +358,7 @@ pub mod Pool {
                             // + reward,
                         );
                     self.profit.write(self.profit.read() + self.withdraw_fee.read());
-                    if (*value[4] > 0 && relayer != contract_address_const::<0>()) {
+                    if (*value[4] > 0 && relayer != 0.try_into().unwrap()) {
                         IERC20Dispatcher { contract_address: self.token.read() }
                             .transfer(relayer, *value[4]);
                     }
@@ -320,7 +409,6 @@ pub mod Pool {
             return self.count.read();
         }
 
-        
 
         /// This function calculates the reward for the liquidity providers
         ///
@@ -427,7 +515,6 @@ pub mod Pool {
             return result;
         }
 
-        
 
         /// This function checks if a nullifier hash has been spent
         fn isSpent(self: @ContractState, _nullifierHash: u256) -> bool {
@@ -439,6 +526,44 @@ pub mod Pool {
             syscalls::replace_class_syscall(new_class_hash).unwrap();
             self.emit(Upgrade { new_classhash: new_class_hash, owner: self.fac.read() });
         }
+    }
+
+    fn deployStealthAddress(
+        ref self: ContractState, _starkKey: felt252, params: Span<felt252>, id: u8,
+    ) -> ContractAddress {
+        let mut contract_address: ContractAddress = 0.try_into().unwrap();
+        if (id == 0) {
+            let dispatcher = IUniversalDeployerDispatcher {
+                contract_address: UDC_ADDRESS.try_into().unwrap(),
+            };
+            let mut cd = array![0];
+            cd.append(_starkKey);
+            cd.append(1);
+
+            contract_address = dispatcher
+                .deploy_contract(
+                    (*params.at(0)).try_into().unwrap(), _starkKey, true, cd.span(),
+                );
+        } else if (id == 1) {
+            let mut depl_params_serlz = array![];
+            let depl_params = AdditionalDeploymentParams {
+                account_implementation: (*params.at(0)).try_into().unwrap(),
+                signer_type: SignerType::Empty,
+                secp256r1_signer: Secp256r1PubKey { pub_x: 0.into(), pub_y: 0.into() },
+                multisig_threshold: 0,
+                withdrawal_limit_low: 0,
+                fee_rate: 0,
+                stark_fee_rate: 0,
+                chain_id: *params.at(1),
+                deployment_params_signature: (*params.at(2), *params.at(3)),
+            };
+            depl_params.serialize(ref depl_params_serlz);
+            contract_address =
+                IBraavosAccountFactoryDispatcher { contract_address: BRAAVOS_FACTORY }
+                .deploy_braavos_account(_starkKey, depl_params_serlz.span());
+        }
+
+        return contract_address;
     }
 
     /// This function returns the number of days passed since the current day
@@ -460,7 +585,7 @@ pub mod Pool {
         return days;
     }
 
-    fn insert(ref self: ContractState, _leaf: u256){
+    fn insert(ref self: ContractState, _leaf: u256) {
         let mut currentDay = 1;
         let mut leafHash = IHasherDispatcher { contract_address: self.hasher.read() }
             .MiMC5Sponge([_leaf, currentDay], 0);
@@ -541,23 +666,23 @@ pub mod Pool {
         self.count.write(_count + 1);
     }
 
-    fn insertToLeafs(ref self: ContractState, value: u256){
+    fn insertToLeafs(ref self: ContractState, value: u256) {
         let mut curIndex = 0;
-        if(self.leafs.read(0) == 0){
+        if (self.leafs.read(0) == 0) {
             curIndex = 0;
-        } else if(self.leafs.read(1) == 0){
+        } else if (self.leafs.read(1) == 0) {
             curIndex = 1;
-        } else if(self.leafs.read(2) == 0){
+        } else if (self.leafs.read(2) == 0) {
             curIndex = 2;
-        } else if(self.leafs.read(3) == 0){
+        } else if (self.leafs.read(3) == 0) {
             curIndex = 3;
         } else {
             for i in 0..4_u256 {
                 self.leafs.entry(i).write(0);
-            };
+            }
             curIndex = 0;
         }
-        self.leafs.entry(curIndex).write(value); 
+        self.leafs.entry(curIndex).write(value);
     }
     /// This function inserts a new leaf into the Merkle tree
 ///
